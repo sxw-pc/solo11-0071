@@ -1,0 +1,20 @@
+From: Demo Analyst <analyst@demo.invalid>
+To: archive@demo.invalid
+Subject: =?UTF-8?B?5pyI5bqm6YCa55+l?=
+Date: Mon, 02 Jan 2023 09:31:00 +0000
+Message-ID: <q1-0002@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="demo-0002"
+
+--demo-0002
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Synthetic body with encoded filename.
+--demo-0002
+Content-Type: text/plain; charset="utf-8"; name="=?UTF-8?B?5pyI5bqm5oql6KGoLnR4dA==?="
+Content-Disposition: attachment; filename="=?UTF-8?B?5pyI5bqm5oql6KGoLnR4dA==?="
+Content-Transfer-Encoding: base64
+
+5ZCI5oiQ5pyI5bqm5oql5ZGK5YaF5a6577yM5LuF55So5LqO5pys5ZywIGZpeHR1cmXjgIIK
+--demo-0002--

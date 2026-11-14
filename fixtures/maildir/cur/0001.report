@@ -1,0 +1,32 @@
+From: Demo Analyst <analyst@demo.invalid>
+To: archive@demo.invalid
+Subject: Quarterly package
+Date: Mon, 02 Jan 2023 09:30:00 +0000
+Message-ID: <q1-0001@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============0066072934644788729=="
+
+--===============0066072934644788729==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Synthetic email body. No remote resources.
+
+--===============0066072934644788729==
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="quarterly-report.pdf"
+MIME-Version: 1.0
+
+JVBERi0xLjQKJSBTeW50aGV0aWMgcXVhcnRlcmx5IGZpeHR1cmUgZm9yIGRlbW8uaW52YWxpZCBv
+bmx5LgoxIDAgb2JqCjw8IC9UeXBlIC9DYXRhbG9nID4+CmVuZG9iagolJUVPRgo=
+
+--===============0066072934644788729==
+Content-Type: text/csv
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="signals.csv"
+MIME-Version: 1.0
+
+YWNjb3VudCxhbW91bnQKREVNTy0wMDEsMTIwMApERU1PLTAwMiw5ODAK
+
+--===============0066072934644788729==--

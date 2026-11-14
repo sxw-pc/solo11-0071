@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>邮件附采台审计报告</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f1ea;
+      --panel: #fffdf8;
+      --ink: #1d2528;
+      --muted: #667277;
+      --line: #d8d2c5;
+      --accent: #0b6b63;
+      --warn: #8a4b08;
+      --bad: #8b2f2f;
+      --ok: #27633a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #12191b;
+        --panel: #1a2326;
+        --ink: #e7eeec;
+        --muted: #9aabab;
+        --line: #354347;
+        --accent: #68c9bb;
+        --warn: #e2a461;
+        --bad: #ef8e88;
+        --ok: #89d39b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 30px 20px 60px; }
+    h1, h2 { font-family: ui-serif, Georgia, "Times New Roman", serif; letter-spacing: .01em; }
+    h1 { margin: 0 0 8px; font-size: clamp(2rem, 5vw, 3.2rem); line-height: 1.05; }
+    h2 { margin: 38px 0 12px; font-size: 1.35rem; }
+    p { margin: 8px 0; }
+    .muted { color: var(--muted); }
+    .hero { border-bottom: 3px solid var(--accent); padding-bottom: 22px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; margin-top: 22px; }
+    .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+    .stat strong { display: block; font-size: 1.8rem; line-height: 1.1; }
+    .stat span { color: var(--muted); font-size: .85rem; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; white-space: nowrap; background: color-mix(in srgb, var(--panel) 80%, var(--bg)); }
+    tr:last-child td { border-bottom: 0; }
+    code, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .8rem; overflow-wrap: anywhere; }
+    .tag { display: inline-block; border: 1px solid currentColor; border-radius: 999px; padding: 1px 8px; font-size: .72rem; white-space: nowrap; }
+    .s-accepted { color: var(--ok); }
+    .s-quarantined, .s-error { color: var(--bad); }
+    .s-rejected { color: var(--warn); }
+    .s-duplicate { color: var(--accent); }
+    .errors { border-left: 4px solid var(--bad); padding-left: 16px; }
+    .empty { color: var(--muted); padding: 14px; }
+    footer { margin-top: 42px; border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: .82rem; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="muted">MAILATT · LOCAL ATTACHMENT EVIDENCE LEDGER</p>
+    <h1>邮件附采台审计报告</h1>
+    <p>生成时间 <span class="mono">{{ report.generated_at }}</span> · 运行 <span class="mono">{{ report.run.run_id or "n/a" }}</span> · 状态 <span class="mono">{{ report.run.status or "n/a" }}</span></p>
+    <p class="muted">仅处理本地邮件导出；报告与页面不引用 CDN、不连接远程服务。</p>
+    <div class="stats">
+      <div class="stat"><strong>{{ report.summary.messages.total }}</strong><span>邮件总数</span></div>
+      <div class="stat"><strong>{{ report.summary.messages.error }}</strong><span>失败邮件</span></div>
+      <div class="stat"><strong>{{ report.summary.attachments.by_status.accepted }}</strong><span>归档附件</span></div>
+      <div class="stat"><strong>{{ report.summary.attachments.by_status.quarantined }}</strong><span>隔离附件</span></div>
+      <div class="stat"><strong>{{ report.summary.attachments.by_status.rejected }}</strong><span>拒绝附件</span></div>
+      <div class="stat"><strong>{{ report.summary.attachments.by_status.duplicate }}</strong><span>重复内容</span></div>
+    </div>
+  </header>
+
+  <h2>内容寻址对象</h2>
+  <div class="panel">
+    {% if report.objects %}
+    <table>
+      <thead><tr><th>状态</th><th>SHA-256</th><th>字节</th><th>MIME</th><th>安全文件名</th><th>来源</th><th>对象路径</th></tr></thead>
+      <tbody>
+      {% for item in report.objects %}
+        <tr>
+          <td><span class="tag s-{{ item.status }}">{{ item.status }}</span></td>
+          <td class="mono">{{ item.sha256 }}</td>
+          <td>{{ item.size }}</td>
+          <td>{{ item.media_type }}</td>
+          <td>{{ item.safe_filename }}</td>
+          <td class="mono">{{ item.source_ref }} · {{ item.part_id }}</td>
+          <td class="mono">{{ item.path }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty">没有归档对象。</p>{% endif %}
+  </div>
+
+  <h2>附件判定台账</h2>
+  <div class="panel">
+    {% if report.attachments %}
+    <table>
+      <thead><tr><th>状态</th><th>来源</th><th>原始文件名</th><th>MIME</th><th>字节</th><th>原因</th><th>存储路径</th></tr></thead>
+      <tbody>
+      {% for item in report.attachments %}
+        <tr>
+          <td><span class="tag s-{{ item.status }}">{{ item.status }}</span></td>
+          <td class="mono">{{ item.message_source }}/{{ item.message_path }} · {{ item.part_id }}</td>
+          <td>{{ item.filename }}</td>
+          <td>{{ item.media_type }}</td>
+          <td>{{ item.size }}</td>
+          <td class="mono">{{ item.reason_code }}</td>
+          <td class="mono">{{ item.quarantine_path or item.object_path or "—" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty">没有附件判定记录。</p>{% endif %}
+  </div>
+
+  <h2>邮件台账</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>状态</th><th>来源</th><th>主题</th><th>发件人</th><th>时间</th><th>附件</th></tr></thead>
+      <tbody>
+      {% for item in report.messages %}
+        <tr>
+          <td><span class="tag s-{{ item.status }}">{{ item.status }}</span></td>
+          <td class="mono">{{ item.source_name }}/{{ item.relative_path }}</td>
+          <td>{{ item.subject or "（无主题）" }}</td>
+          <td>{{ item.sender }}</td>
+          <td class="mono">{{ item.sent_at or "—" }}</td>
+          <td>{{ item.attachment_count }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h2>失败隔离</h2>
+  {% if report.errors %}
+  <div class="panel errors">
+    <table>
+      <thead><tr><th>来源</th><th>错误码</th><th>详情</th></tr></thead>
+      <tbody>
+      {% for item in report.errors %}
+        <tr>
+          <td class="mono">{{ item.source_name }}/{{ item.relative_path }}</td>
+          <td class="mono">{{ item.error_code }}</td>
+          <td>{{ item.error_detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="empty">本批次没有邮件级错误。</p>{% endif %}
+
+  <footer>
+    <p>复核命令：<code>python -m mailatt verify --workdir &lt;workdir&gt;</code> · 只读复核台：<code>python -m mailatt serve --workdir &lt;workdir&gt;</code></p>
+    <p>附件对象按 SHA-256 内容寻址保存，原件文件名只作为元数据展示，不参与磁盘路径。</p>
+  </footer>
+</main>
+</body>
+</html>

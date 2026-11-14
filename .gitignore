@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mailatt-demo/
+.mailatt-work/
+build/
+dist/
+*.egg-info/
+.venv/

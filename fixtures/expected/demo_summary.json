@@ -1,0 +1,27 @@
+{
+  "messages_total": 11,
+  "messages_ok": 9,
+  "messages_error": 2,
+  "attachments_total": 10,
+  "attachments_by_status": {
+    "accepted": 6,
+    "duplicate": 1,
+    "quarantined": 1,
+    "rejected": 2
+  },
+  "objects_total": 7,
+  "objects_accepted": 6,
+  "objects_quarantined": 1,
+  "expected_error_sources": [
+    "bad/broken-multipart.eml",
+    "bad/empty.eml"
+  ],
+  "expected_reason_codes": [
+    "duplicate_content",
+    "path_traversal",
+    "size_exceeded",
+    "suspicious_extension"
+  ],
+  "nested_attachment_filename": "nested-note.txt",
+  "rfc2047_filename": "月度报表.txt"
+}

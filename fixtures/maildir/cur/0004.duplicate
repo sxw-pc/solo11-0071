@@ -1,0 +1,24 @@
+From: Demo Analyst <analyst@demo.invalid>
+To: archive@demo.invalid
+Subject: Quarterly copy
+Date: Mon, 02 Jan 2023 09:30:00 +0000
+Message-ID: <q1-0004@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============5532132561316278292=="
+
+--===============5532132561316278292==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Duplicate object fixture.
+
+--===============5532132561316278292==
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="quarterly-copy.pdf"
+MIME-Version: 1.0
+
+JVBERi0xLjQKJSBTeW50aGV0aWMgcXVhcnRlcmx5IGZpeHR1cmUgZm9yIGRlbW8uaW52YWxpZCBv
+bmx5LgoxIDAgb2JqCjw8IC9UeXBlIC9DYXRhbG9nID4+CmVuZG9iagolJUVPRgo=
+
+--===============5532132561316278292==--

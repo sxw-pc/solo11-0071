@@ -1,0 +1,19 @@
+From: Demo Analyst <analyst@demo.invalid>
+To: archive@demo.invalid
+Subject: Encoded attachment name
+Date: Mon, 02 Jan 2023 09:35:00 +0000
+Message-ID: <q2-rfc2047@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="demo-rfc2047"
+
+--demo-rfc2047
+Content-Type: text/plain; charset="utf-8"
+
+Synthetic body.
+--demo-rfc2047
+Content-Type: text/plain; charset="utf-8"; name="=?UTF-8?B?5pyI5bqm5oql6KGoLnR4dA==?="
+Content-Disposition: attachment; filename="=?UTF-8?B?5pyI5bqm5oql6KGoLnR4dA==?="
+Content-Transfer-Encoding: base64
+
+UkZDIDIwNDcgZW5jb2RlZCBmaWxlbmFtZSBmaXh0dXJlLiBkZW1vLmludmFsaWQgb25seS4K
+--demo-rfc2047--

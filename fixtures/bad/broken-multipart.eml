@@ -1,0 +1,12 @@
+From: Demo Analyst <analyst@demo.invalid>
+To: archive@demo.invalid
+Subject: Broken multipart
+Date: Mon, 02 Jan 2023 09:40:00 +0000
+Message-ID: <broken-0001@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="INTENDED-BOUNDARY"
+
+--WRONG-BOUNDARY
+Content-Type: text/plain
+
+This boundary never matches.

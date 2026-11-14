@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>邮件附采台 · 只读复核</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #eef2ef;
+      --panel: #fbfdfb;
+      --ink: #172220;
+      --muted: #64716e;
+      --line: #ced8d3;
+      --accent: #0b6b63;
+      --warn: #97580f;
+      --bad: #932f32;
+      --ok: #23643a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111817;
+        --panel: #192321;
+        --ink: #e5eeeb;
+        --muted: #97a7a3;
+        --line: #33423f;
+        --accent: #65c9ba;
+        --warn: #e3a25f;
+        --bad: #f08e89;
+        --ok: #8bd59c;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1120px; margin: 0 auto; padding: 26px 18px 60px; }
+    h1, h2 { font-family: ui-serif, Georgia, "Times New Roman", serif; }
+    h1 { font-size: 2rem; margin: 0; }
+    h2 { font-size: 1.25rem; margin: 30px 0 10px; }
+    a { color: var(--accent); }
+    .top { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; border-bottom: 3px solid var(--accent); padding-bottom: 16px; }
+    .top p { margin: 3px 0; color: var(--muted); font-size: .85rem; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 18px; }
+    .stat { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 12px 14px; }
+    .stat strong { display: block; font-size: 1.7rem; }
+    .stat span { color: var(--muted); font-size: .8rem; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: auto; margin-top: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); white-space: nowrap; }
+    tr:last-child td { border-bottom: 0; }
+    code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .8rem; overflow-wrap: anywhere; }
+    .tag { border: 1px solid currentColor; border-radius: 999px; padding: 1px 8px; font-size: .72rem; white-space: nowrap; }
+    .s-accepted { color: var(--ok); }
+    .s-quarantined, .s-error { color: var(--bad); }
+    .s-rejected { color: var(--warn); }
+    .s-duplicate { color: var(--accent); }
+    .muted { color: var(--muted); }
+    .notice { border-left: 4px solid var(--warn); padding: 10px 14px; background: var(--panel); margin: 14px 0; }
+    .detail { display: grid; grid-template-columns: minmax(130px, 220px) 1fr; gap: 0; }
+    .detail dt, .detail dd { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+    .detail dt { color: var(--muted); }
+    .detail dd { overflow-wrap: anywhere; }
+    .back { display: inline-block; margin-top: 18px; }
+    footer { margin-top: 40px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--muted); font-size: .8rem; }
+  </style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div>
+      <p>MAILATT · READ-ONLY INSPECTION</p>
+      <h1>邮件附采台复核台</h1>
+    </div>
+    <p>仅监听 127.0.0.1 · 无写入接口</p>
+  </header>
+
+  <section class="stats">
+    <div class="stat"><strong>{{ summary.messages_total }}</strong><span>邮件</span></div>
+    <div class="stat"><strong>{{ summary.messages_error }}</strong><span>失败邮件</span></div>
+    <div class="stat"><strong>{{ summary.attachments_total }}</strong><span>附件判定</span></div>
+    <div class="stat"><strong>{{ summary.by_status.accepted }}</strong><span>归档</span></div>
+    <div class="stat"><strong>{{ summary.by_status.quarantined }}</strong><span>隔离</span></div>
+    <div class="stat"><strong>{{ summary.by_status.rejected }}</strong><span>拒绝</span></div>
+  </section>
+  <p class="muted">最近运行：<code>{{ summary.last_run_id or "n/a" }}</code> · {{ summary.last_run_status or "n/a" }} · {{ summary.last_run_finished_at or "n/a" }}</p>
+
+  {% if view == "index" %}
+  <h2>邮件</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>状态</th><th>来源</th><th>主题</th><th>发件人</th><th>附件</th></tr></thead>
+      <tbody>
+      {% for item in messages %}
+        <tr>
+          <td><span class="tag s-{{ item.status }}">{{ item.status }}</span></td>
+          <td><code>{{ item.source_name }}/{{ item.relative_path }}</code></td>
+          <td><a href="/messages/{{ item.id }}">{{ item.subject or "（无主题）" }}</a></td>
+          <td>{{ item.sender }}</td>
+          <td>{{ item.attachment_count if item.attachment_count is defined else "" }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">没有邮件记录。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <h2>附件</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>状态</th><th>来源</th><th>安全文件名</th><th>MIME</th><th>字节</th><th>原因</th></tr></thead>
+      <tbody>
+      {% for item in attachments %}
+        <tr>
+          <td><span class="tag s-{{ item.status }}">{{ item.status }}</span></td>
+          <td><code>{{ item.message_source }}/{{ item.message_path }} · {{ item.part_id }}</code></td>
+          <td><a href="/attachments/{{ item.id }}">{{ item.safe_filename }}</a></td>
+          <td>{{ item.media_type }}</td>
+          <td>{{ item.size }}</td>
+          <td><code>{{ item.reason_code }}</code></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="muted">没有附件记录。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% elif view == "message" %}
+  <h2>邮件详情</h2>
+  <dl class="panel detail">
+    <dt>来源</dt><dd><code>{{ message.source_name }}/{{ message.relative_path }}</code></dd>
+    <dt>状态</dt><dd><span class="tag s-{{ message.status }}">{{ message.status }}</span></dd>
+    <dt>Message-ID</dt><dd><code>{{ message.message_id or "—" }}</code></dd>
+    <dt>主题</dt><dd>{{ message.subject or "—" }}</dd>
+    <dt>发件人</dt><dd>{{ message.sender or "—" }}</dd>
+    <dt>时间</dt><dd><code>{{ message.sent_at or "—" }}</code></dd>
+    <dt>内容哈希</dt><dd><code>{{ message.digest }}</code></dd>
+    {% if message.error_code %}
+    <dt>错误</dt><dd><code>{{ message.error_code }}</code> {{ message.error_detail }}</dd>
+    {% endif %}
+  </dl>
+  <h2>该邮件的附件判定</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>部分</th><th>状态</th><th>文件名</th><th>MIME</th><th>原因</th></tr></thead>
+      <tbody>
+      {% for item in message_attachments %}
+        <tr>
+          <td><code>{{ item.part_id }}</code></td>
+          <td><span class="tag s-{{ item.status }}">{{ item.status }}</span></td>
+          <td><a href="/attachments/{{ item.id }}">{{ item.safe_filename }}</a></td>
+          <td>{{ item.media_type }}</td>
+          <td><code>{{ item.reason_code }}</code></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">没有附件。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% elif view == "attachment" %}
+  <h2>附件详情</h2>
+  {% if attachment.status == "quarantined" %}
+  <p class="notice">此对象处于隔离区。复核台只展示元数据，不提供下载。</p>
+  {% elif attachment.status == "rejected" %}
+  <p class="notice">此附件被策略拒绝，未写入对象存储。</p>
+  {% endif %}
+  <dl class="panel detail">
+    <dt>状态</dt><dd><span class="tag s-{{ attachment.status }}">{{ attachment.status }}</span></dd>
+    <dt>原始文件名</dt><dd>{{ attachment.filename }}</dd>
+    <dt>安全文件名</dt><dd>{{ attachment.safe_filename }}</dd>
+    <dt>来源</dt><dd><code>{{ attachment.message_source }}/{{ attachment.message_path }} · {{ attachment.part_id }}</code></dd>
+    <dt>MIME</dt><dd>{{ attachment.media_type }}</dd>
+    <dt>字节</dt><dd>{{ attachment.size }}</dd>
+    <dt>SHA-256</dt><dd><code>{{ attachment.sha256 }}</code></dd>
+    <dt>判定原因</dt><dd><code>{{ attachment.reason_code }}</code> {{ attachment.reason }}</dd>
+    <dt>对象路径</dt><dd><code>{{ attachment.object_path or attachment.quarantine_path or "—" }}</code></dd>
+    <dt>嵌套深度</dt><dd>{{ attachment.nested_depth }}</dd>
+  </dl>
+  {% if attachment.status in ("accepted", "duplicate") and attachment.object_path %}
+  <p><a href="/download/{{ attachment.id }}">下载归档对象</a></p>
+  {% endif %}
+
+  {% else %}
+  <p class="notice">未知视图。</p>
+  {% endif %}
+
+  <a class="back" href="/">返回总览</a>
+  <footer>
+    数据来源为本地 SQLite 台账；所有读取接口均为 GET，服务不提供新增、修改或删除操作。
+    JSON 接口：<code>/api/summary</code> · <code>/api/attachments</code>
+  </footer>
+</main>
+</body>
+</html>

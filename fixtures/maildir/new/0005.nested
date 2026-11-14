@@ -1,0 +1,45 @@
+From: Demo Analyst <analyst@demo.invalid>
+To: archive@demo.invalid
+Subject: Forwarded package
+Date: Mon, 02 Jan 2023 09:30:00 +0000
+Message-ID: <q1-0005@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============0240633003311206848=="
+
+--===============0240633003311206848==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+The nested message is synthetic.
+
+--===============0240633003311206848==
+Content-Type: message/rfc822
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+Content-Disposition: attachment
+
+From: Nested Sender <nested@demo.invalid>
+To: archive@demo.invalid
+Subject: Nested notes
+Date: Mon, 02 Jan 2023 09:30:00 +0000
+Message-ID: <nested-0005@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============1021359489255455822=="
+
+--===============1021359489255455822==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Nested synthetic body.
+
+--===============1021359489255455822==
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="nested-note.txt"
+MIME-Version: 1.0
+
+U3ludGhldGljIG5lc3RlZCBhdHRhY2htZW50LiBkZW1vLmludmFsaWQgb25seS4K
+
+--===============1021359489255455822==--
+
+--===============0240633003311206848==--

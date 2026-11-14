@@ -1,0 +1,62 @@
+version: 1
+sources:
+  - name: maildir
+    path: ../maildir
+    kind: maildir
+  - name: eml
+    path: ../eml
+    kind: eml
+  - name: bad
+    path: ../bad
+    kind: eml
+policy:
+  allowed_extensions:
+    - .pdf
+    - .txt
+    - .csv
+    - .json
+    - .png
+    - .jpg
+    - .jpeg
+    - .docx
+    - .xlsx
+    - .zip
+  allowed_media_types:
+    - application/pdf
+    - application/json
+    - application/octet-stream
+    - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+    - application/zip
+    - image/png
+    - image/jpeg
+    - text/csv
+    - text/plain
+  quarantine_extensions:
+    - .bat
+    - .cmd
+    - .dll
+    - .docm
+    - .exe
+    - .hta
+    - .js
+    - .msi
+    - .ps1
+    - .scr
+    - .vbs
+    - .xlsm
+  blocked_extensions:
+    - .iso
+    - .lnk
+    - .reg
+    - .url
+  max_file_bytes: 8192
+  min_file_bytes: 0
+  max_attachments_per_message: 6
+  max_nested_depth: 3
+  max_message_bytes: 262144
+  max_filename_length: 120
+  allow_nested_messages: true
+  allow_inline_attachments: true
+  reject_path_traversal: true
+  skip_duplicate_content: true

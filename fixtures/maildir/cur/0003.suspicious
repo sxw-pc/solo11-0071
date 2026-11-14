@@ -1,0 +1,32 @@
+From: Demo Analyst <analyst@demo.invalid>
+To: archive@demo.invalid
+Subject: Suspicious package
+Date: Mon, 02 Jan 2023 09:30:00 +0000
+Message-ID: <q1-0003@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============2569113433792322754=="
+
+--===============2569113433792322754==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Two policy fixtures follow.
+
+--===============2569113433792322754==
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="invoice.exe"
+MIME-Version: 1.0
+
+U3ludGhldGljIGV4ZWN1dGFibGUgcGxhY2Vob2xkZXIsIHBsYWluIHRleHQgb25seS4gRG8gbm90
+IGV4ZWN1dGUuCg==
+
+--===============2569113433792322754==
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="../../escape.txt"
+MIME-Version: 1.0
+
+U3ludGhldGljIHBhdGggdHJhdmVyc2FsIHBheWxvYWQsIG11c3QgbmV2ZXIgYmUgc3RvcmVkLgo=
+
+--===============2569113433792322754==--

@@ -1,0 +1,24 @@
+From: Demo Analyst <analyst@demo.invalid>
+To: archive@demo.invalid
+Subject: Inline pixel
+Date: Mon, 02 Jan 2023 09:30:00 +0000
+Message-ID: <q1-0006@demo.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============2087359958206250452=="
+
+--===============2087359958206250452==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Inline synthetic image fixture.
+
+--===============2087359958206250452==
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="pixel.png"
+MIME-Version: 1.0
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YA
+AAAASUVORK5CYII=
+
+--===============2087359958206250452==--
