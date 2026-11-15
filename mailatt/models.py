@@ -144,6 +144,10 @@ class RunSummary:
     duplicates: int = 0
     objects_created: int = 0
     ignored_symlinks: int = 0
+    pending_commits: int = 0
+    uncommitted_quarantined: int = 0
+    uncommitted_cleaned: int = 0
+    recovery_failures: int = 0
     errors: list[dict[str, str]] = field(default_factory=list)
 
     @property
@@ -168,6 +172,10 @@ class RunSummary:
             "duplicates": self.duplicates,
             "objects_created": self.objects_created,
             "ignored_symlinks": self.ignored_symlinks,
+            "pending_commits": self.pending_commits,
+            "uncommitted_quarantined": self.uncommitted_quarantined,
+            "uncommitted_cleaned": self.uncommitted_cleaned,
+            "recovery_failures": self.recovery_failures,
             "errors": list(self.errors),
         }
 

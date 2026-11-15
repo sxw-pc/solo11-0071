@@ -218,6 +218,106 @@ class Ledger:
         except sqlite3.Error as exc:
             raise LedgerError(f"cannot sync attachments: {exc}") from exc
 
+    def commit_message(
+        self,
+        record: MessageRecord,
+        attachments: Iterable[AttachmentRecord],
+        run_id: str,
+        policy_hash: str,
+    ) -> int:
+        """Upsert a message and replace its attachments in one transaction."""
+        warnings = json.dumps(list(record.warnings), ensure_ascii=False, sort_keys=True)
+        rows = list(attachments)
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute(
+                """INSERT INTO messages(
+                    source_name, relative_path, digest, size, message_id, subject, sender,
+                    sent_at, status, error_code, error_detail, warnings_json, policy_hash,
+                    first_seen_run, last_seen_run)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_name, relative_path) DO UPDATE SET
+                    digest=excluded.digest, size=excluded.size, message_id=excluded.message_id,
+                    subject=excluded.subject, sender=excluded.sender, sent_at=excluded.sent_at,
+                    status=excluded.status, error_code=excluded.error_code,
+                    error_detail=excluded.error_detail, warnings_json=excluded.warnings_json,
+                    policy_hash=excluded.policy_hash, last_seen_run=excluded.last_seen_run""",
+                (
+                    record.source_name, record.relative_path, record.digest, record.size,
+                    record.message_id, record.subject, record.sender, record.sent_at,
+                    record.status.value, record.error_code, record.error_detail, warnings,
+                    policy_hash, run_id, run_id,
+                ),
+            )
+            row = self.conn.execute(
+                "SELECT id FROM messages WHERE source_name=? AND relative_path=?",
+                (record.source_name, record.relative_path),
+            ).fetchone()
+            if row is None:
+                raise LedgerError("message upsert did not return an id")
+            message_id = int(row["id"])
+            for item in rows:
+                self.conn.execute(
+                    """INSERT INTO attachments(
+                        message_id, part_id, sha256, size, filename, safe_filename, media_type,
+                        disposition, nested_depth, status, reason_code, reason, object_path,
+                        quarantine_path, first_seen_run, last_seen_run)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(message_id, part_id) DO UPDATE SET
+                        sha256=excluded.sha256, size=excluded.size, filename=excluded.filename,
+                        safe_filename=excluded.safe_filename, media_type=excluded.media_type,
+                        disposition=excluded.disposition, nested_depth=excluded.nested_depth,
+                        status=excluded.status, reason_code=excluded.reason_code,
+                        reason=excluded.reason, object_path=excluded.object_path,
+                        quarantine_path=excluded.quarantine_path,
+                        last_seen_run=excluded.last_seen_run""",
+                    (
+                        message_id, item.part_id, item.sha256, item.size, item.filename,
+                        item.safe_filename, item.media_type, item.disposition, item.nested_depth,
+                        item.status.value, item.reason_code, item.reason, item.object_path,
+                        item.quarantine_path, run_id, run_id,
+                    ),
+                )
+            if rows:
+                marks = ",".join("?" for _ in rows)
+                self.conn.execute(
+                    f"DELETE FROM attachments WHERE message_id=? AND part_id NOT IN ({marks})",
+                    (message_id, *(item.part_id for item in rows)),
+                )
+            else:
+                self.conn.execute("DELETE FROM attachments WHERE message_id=?", (message_id,))
+            self.conn.commit()
+        except sqlite3.Error as exc:
+            self.conn.rollback()
+            raise LedgerError(f"cannot commit message: {exc}") from exc
+        except LedgerError:
+            self.conn.rollback()
+            raise
+        return message_id
+
+    def referenced_paths(self, paths: Iterable[str]) -> set[str]:
+        """Return the subset of object paths currently referenced by the ledger."""
+        wanted = [path for path in paths if path]
+        if not wanted:
+            return set()
+        unique = list(dict.fromkeys(wanted))
+        marks = ",".join("?" for _ in unique)
+        rows = self._query(
+            f"""SELECT object_path AS path FROM attachments WHERE object_path IN ({marks})
+                UNION
+                SELECT quarantine_path AS path FROM attachments WHERE quarantine_path IN ({marks})""",
+            (*unique, *unique),
+        )
+        return {row["path"] for row in rows if row["path"]}
+
+    def object_reference_count(self, relative_path: str) -> int:
+        row = self._one(
+            """SELECT COUNT(*) AS count FROM attachments
+               WHERE object_path=? OR quarantine_path=?""",
+            (relative_path, relative_path),
+        )
+        return int(row["count"]) if row else 0
+
     def accepted_hashes(self) -> set[str]:
         rows = self._query("SELECT DISTINCT sha256 FROM attachments WHERE status='accepted'")
         return {row["sha256"] for row in rows}

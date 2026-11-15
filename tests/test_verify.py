@@ -4,6 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
+from mailatt.recovery import recover_workdir
 from mailatt.util import sha256_bytes
 from mailatt.verify import verify_workdir
 
@@ -80,3 +81,101 @@ def test_verification_does_not_modify_ledger(demo_run) -> None:
     before = ledger_path.stat().st_mtime_ns
     verify_workdir(demo_run.workdir)
     assert ledger_path.stat().st_mtime_ns == before
+
+
+# ---------------------------------------------------------------------------
+# Two-phase commit / uncommitted-object verification
+# ---------------------------------------------------------------------------
+
+
+def _crashed_workdir(tmp_path: Path):
+    from mailatt.config import load_config
+
+    import mailatt.runner as runner_module
+    from recovery_helpers import build_email, write_source
+
+    first = b"verify pending payload one"
+    second = b"verify pending payload two"
+    email = build_email(
+        subject="Verify pending",
+        message_id="verify-pending@demo.invalid",
+        attachments=(
+            ("one.txt", "text/plain", first),
+            ("two.txt", "text/plain", second),
+        ),
+    )
+    config_path, workdir = write_source(tmp_path, files={"pending.eml": email})
+
+    def crash(workdir_arg, store, ledger, journal):
+        from mailatt.recovery import _journal_item, _promote_all
+
+        item = _journal_item(workdir_arg, store, ledger, journal.commit_key, "quarantine")
+        _promote_all(store, item)
+        raise RuntimeError("simulated crash")
+
+    original = runner_module.complete_message_commit
+    runner_module.complete_message_commit = crash
+    try:
+        from mailatt.runner import collect
+
+        collect(load_config(config_path))
+    finally:
+        runner_module.complete_message_commit = original
+    return workdir, first, second
+
+
+def test_pending_commit_is_distinct_from_orphan(tmp_path: Path) -> None:
+    workdir, _, _ = _crashed_workdir(tmp_path)
+    result = verify_workdir(workdir)
+    assert result.ok is False
+    assert result.pending_commits == 1
+    codes = {issue["code"] for issue in result.issues}
+    assert "PENDING_COMMIT" in codes
+    assert "PENDING_COMMIT_OBJECT" in codes
+    assert "OBJECT_ORPHAN" not in codes
+
+
+def test_recovered_archive_verifies_clean(tmp_path: Path) -> None:
+    workdir, _, _ = _crashed_workdir(tmp_path)
+    recover_workdir(workdir, apply=True)
+    result = verify_workdir(workdir)
+    assert result.ok is True
+    assert result.pending_commits == 0
+    assert result.issues == []
+
+
+def test_quarantined_uncommitted_is_reported_distinctly(tmp_path: Path) -> None:
+    workdir, first, second = _crashed_workdir(tmp_path)
+    source = workdir.parent / "source" / "pending.eml"
+    source.write_bytes(source.read_bytes() + b"\nX-Mutated: yes\n")
+    recover_workdir(workdir, apply=True)
+    result = verify_workdir(workdir)
+    codes = {issue["code"] for issue in result.issues}
+    assert "UNCOMMITTED_PRESERVED" in codes
+    assert "OBJECT_ORPHAN" not in codes
+    assert result.uncommitted_entries == 1
+    preserved = {
+        path.name
+        for entry in (workdir / "uncommitted").iterdir()
+        for path in entry.joinpath("objects").iterdir()
+    }
+    assert preserved == {sha256_bytes(first), sha256_bytes(second)}
+
+
+def test_cleanup_tombstone_is_reported_distinctly(tmp_path: Path) -> None:
+    workdir, _, _ = _crashed_workdir(tmp_path)
+    (workdir.parent / "source" / "pending.eml").unlink()
+    recover_workdir(workdir, strategy="cleanup", apply=True)
+    result = verify_workdir(workdir)
+    codes = {issue["code"] for issue in result.issues}
+    assert "UNCOMMITTED_CLEANED" in codes
+    assert "OBJECT_ORPHAN" not in codes
+    assert result.uncommitted_entries == 1
+
+
+def test_verify_counts_pending_in_json_payload(tmp_path: Path) -> None:
+    workdir, _, _ = _crashed_workdir(tmp_path)
+    payload = verify_workdir(workdir).as_dict()
+    assert payload["pending_commits"] == 1
+    assert payload["uncommitted_entries"] == 0
+    assert payload["ok"] is False

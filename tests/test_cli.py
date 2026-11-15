@@ -85,3 +85,88 @@ def test_serve_rejects_public_host(tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert code == 1
     assert "127.0.0.1" in captured.err
+
+
+def test_recover_dry_run_then_apply(tmp_path: Path, capsys, monkeypatch) -> None:
+    from mailatt.config import load_config
+
+    import mailatt.runner as runner_module
+    from recovery_helpers import build_email, write_source
+
+    email = build_email(
+        subject="Cli recover",
+        message_id="cli-recover@demo.invalid",
+        attachments=(("note.txt", "text/plain", b"cli recovery bytes"),),
+    )
+    config_path, workdir = write_source(tmp_path, files={"note.eml": email})
+
+    def crash(workdir_arg, store, ledger, journal):
+        from mailatt.recovery import _journal_item, _promote_all
+
+        item = _journal_item(workdir_arg, store, ledger, journal.commit_key, "quarantine")
+        _promote_all(store, item)
+        raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(runner_module, "complete_message_commit", crash)
+    from mailatt.runner import collect
+
+    collect(load_config(config_path))
+
+    dry = main(["recover", "--workdir", str(workdir), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert dry == 0
+    assert payload["dry_run"] is True
+    assert payload["journals"][0]["action"] == "commit"
+    # Dry run must not touch the ledger.
+    from mailatt.ledger import Ledger
+
+    with Ledger(workdir, readonly=True) as ledger:
+        assert ledger.count_rows("attachments") == 0
+
+    text_run = main(["recover", "--workdir", str(workdir)])
+    assert text_run == 0
+    assert "dry-run" in capsys.readouterr().out
+
+    applied = main(["recover", "--workdir", str(workdir), "--apply", "--json"])
+    applied_payload = json.loads(capsys.readouterr().out)
+    assert applied == 0
+    assert applied_payload["dry_run"] is False
+    with Ledger(workdir, readonly=True) as ledger:
+        assert ledger.count_rows("attachments") == 1
+    assert main(["verify", "--workdir", str(workdir)]) == 0
+
+
+def test_recover_cleanup_strategy_flag(tmp_path: Path, capsys, monkeypatch) -> None:
+    from mailatt.config import load_config
+
+    import mailatt.runner as runner_module
+    from recovery_helpers import build_email, write_source
+
+    email = build_email(
+        subject="Cli cleanup",
+        message_id="cli-cleanup@demo.invalid",
+        attachments=(("note.txt", "text/plain", b"cli cleanup bytes"),),
+    )
+    config_path, workdir = write_source(tmp_path, files={"note.eml": email})
+
+    def crash(workdir_arg, store, ledger, journal):
+        from mailatt.recovery import _journal_item, _promote_all
+
+        item = _journal_item(workdir_arg, store, ledger, journal.commit_key, "cleanup")
+        _promote_all(store, item)
+        raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(runner_module, "complete_message_commit", crash)
+    from mailatt.runner import collect
+
+    collect(load_config(config_path))
+    (workdir.parent / "source" / "note.eml").unlink()
+
+    code = main([
+        "recover", "--workdir", str(workdir),
+        "--uncommitted-policy", "cleanup", "--apply", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["strategy"] == "cleanup"
+    assert payload["journals"][0]["action"] == "clean_uncommitted"

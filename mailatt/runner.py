@@ -1,4 +1,12 @@
-"""Collection pipeline with per-message failure isolation."""
+"""Collection pipeline with per-message failure isolation.
+
+Each message is committed with a recoverable two-phase record
+(see :mod:`mailatt.recovery`): attachment payloads are staged under
+``staging/<commit-key>/`` together with a durable journal, promoted into the
+content-addressed object store, and only then written to the SQLite ledger in a
+single transaction.  A crash between object writes and ledger sync therefore
+leaves a resumable journal instead of unreferenced orphan objects.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +17,9 @@ from typing import Callable
 
 from .config import Config
 from .discovery import discover
-from .errors import MimeParseError, StorageError, normalize_error
+from .errors import MimeParseError, normalize_error
 from .ledger import Ledger
+from .manifest import write_manifest
 from .mime import MimeOptions, parse_message
 from .models import (
     AttachmentCandidate,
@@ -19,15 +28,24 @@ from .models import (
     DiscoveredFile,
     MessageRecord,
     MessageStatus,
-    ObjectManifestEntry,
     PolicyDecision,
     RunSummary,
     StorageKind,
 )
 from .policy import assess_candidates
+from .recovery import (
+    ACTION_CLEAN,
+    ACTION_COMMIT,
+    ACTION_QUARANTINE,
+    CommitJournal,
+    build_recovery_plan,
+    complete_message_commit,
+    execute_recovery_plan,
+    stage_message_commit,
+)
 from .report import generate_reports
 from .storage import ObjectStore
-from .util import atomic_write_json, iso_utc, utc_now
+from .util import iso_utc, utc_now
 
 Clock = Callable[[], datetime]
 
@@ -101,48 +119,42 @@ def _process_message(
     store: ObjectStore,
     known_hashes: set[str],
     summary: RunSummary,
-) -> tuple[MessageRecord, list[AttachmentRecord]]:
+    run_id: str,
+) -> tuple[MessageRecord, list[AttachmentRecord], CommitJournal]:
+    """Parse, policy-check and stage one message; no ledger writes happen here."""
     data = _read_file(file, config.policy.max_message_bytes)
-    parsed = parse_message(
-        data,
-        MimeOptions(
-            allow_nested_messages=config.policy.allow_nested_messages,
-            max_nested_depth=config.policy.max_nested_depth,
-            max_filename_length=config.policy.max_filename_length,
-        ),
+    mime_options = MimeOptions(
+        allow_nested_messages=config.policy.allow_nested_messages,
+        max_nested_depth=config.policy.max_nested_depth,
+        max_filename_length=config.policy.max_filename_length,
     )
+    parsed = parse_message(data, mime_options)
     decisions = assess_candidates(parsed.candidates, config.policy, known_hashes)
     records: list[AttachmentRecord] = []
+    staged: list[tuple[StorageKind, AttachmentCandidate]] = []
     for candidate, decision in zip(parsed.candidates, decisions):
         object_path = ""
         quarantine_path = ""
         if decision.status == Decision.ACCEPTED:
-            stored = store.put(StorageKind.OBJECT, candidate.payload, expected_sha256=candidate.sha256)
-            object_path = stored.relative_path
-            summary.objects_created += int(stored.created)
+            kind = StorageKind.OBJECT
+            object_path = store.relative_path(kind, candidate.sha256)
+            staged.append((kind, candidate))
         elif decision.status == Decision.QUARANTINED:
-            stored = store.put(
-                StorageKind.QUARANTINE, candidate.payload, expected_sha256=candidate.sha256
-            )
-            quarantine_path = stored.relative_path
-            summary.objects_created += int(stored.created)
+            kind = StorageKind.QUARANTINE
+            quarantine_path = store.relative_path(kind, candidate.sha256)
+            staged.append((kind, candidate))
         elif decision.status == Decision.DUPLICATE:
             object_path = store.relative_path(StorageKind.OBJECT, candidate.sha256)
             if not store.exists(StorageKind.OBJECT, candidate.sha256):
-                stored = store.put(StorageKind.OBJECT, candidate.payload, expected_sha256=candidate.sha256)
-                object_path = stored.relative_path
-                summary.objects_created += int(stored.created)
+                kind = StorageKind.OBJECT
+                staged.append((kind, candidate))
                 decision = PolicyDecision(
                     Decision.ACCEPTED,
                     "accepted_after_missing_object",
                     "duplicate reference was missing; object was restored",
                 )
         records.append(_attachment_record(candidate, decision, object_path, quarantine_path))
-    summary.attachments_seen += len(records)
-    summary.accepted += sum(item.status == Decision.ACCEPTED for item in records)
-    summary.quarantined += sum(item.status == Decision.QUARANTINED for item in records)
-    summary.rejected += sum(item.status == Decision.REJECTED for item in records)
-    summary.duplicates += sum(item.status == Decision.DUPLICATE for item in records)
+
     message = MessageRecord(
         source_name=file.source_name,
         relative_path=file.relative_path,
@@ -155,46 +167,80 @@ def _process_message(
         status=MessageStatus.OK,
         warnings=parsed.warnings,
     )
-    return message, records
-
-
-def _manifest_entries(ledger: Ledger, store: ObjectStore) -> list[ObjectManifestEntry]:
-    existing = {item.relative_path for item in store.list_files()}
-    by_path: dict[str, ObjectManifestEntry] = {}
-    for row in ledger.referenced_objects():
-        status = row["status"]
-        path = row["quarantine_path"] if status == "quarantined" else row["object_path"]
-        if not path or path not in existing or path in by_path:
-            continue
-        manifest_status = "quarantined" if status == "quarantined" else "accepted"
-        by_path[path] = ObjectManifestEntry(
-            sha256=row["sha256"],
-            size=row["size"],
-            status=manifest_status,
-            path=path,
-            media_type=row["media_type"],
-            filename=row["filename"],
-            safe_filename=row["safe_filename"],
-            source_ref=f"{row['message_source']}/{row['message_path']}",
-            part_id=row["part_id"],
+    journal = CommitJournal.create(
+        source_name=file.source_name,
+        relative_path=file.relative_path,
+        source_absolute=file.absolute_path,
+        message=message,
+        records=records,
+        policy_hash=config.policy_fingerprint,
+        run_id=run_id,
+        mime_options=mime_options,
+    )
+    # Phase 1a: stage every payload under the stable commit key.
+    for kind, candidate in staged:
+        store.put_staged(
+            journal.commit_key, candidate.payload, expected_sha256=candidate.sha256
         )
-    return sorted(by_path.values(), key=lambda item: (item.status, item.path))
+    # Phase 1b: durably record the intent to commit.
+    stage_message_commit(config.workdir, store, journal)
+    summary.attachments_seen += len(records)
+    summary.accepted += sum(item.status == Decision.ACCEPTED for item in records)
+    summary.quarantined += sum(item.status == Decision.QUARANTINED for item in records)
+    summary.rejected += sum(item.status == Decision.REJECTED for item in records)
+    summary.duplicates += sum(item.status == Decision.DUPLICATE for item in records)
+    return message, records, journal
 
 
-def _write_manifest(config: Config, ledger: Ledger, store: ObjectStore, run_id: str) -> Path:
-    entries = _manifest_entries(ledger, store)
-    payload = {
-        "schema_version": "1.0",
-        "run_id": run_id,
-        "object_count": len(entries),
-        "objects": [entry.as_dict() for entry in entries],
-    }
-    path = config.workdir / "manifest.json"
-    try:
-        atomic_write_json(path, payload)
-    except OSError as exc:
-        raise StorageError(f"cannot write manifest: {exc}") from exc
-    return path
+def _reconcile_pending(
+    config: Config,
+    store: ObjectStore,
+    ledger: Ledger,
+    summary: RunSummary,
+    clock: Clock,
+) -> None:
+    """Resume journals left behind by earlier interrupted or failed commits.
+
+    Uses the quarantine strategy so unrecoverable payloads stay locatable in
+    ``uncommitted/``; the explicit ``recover`` command offers cleanup instead.
+    """
+    plan = build_recovery_plan(config.workdir)
+    if not plan.items and not plan.orphans:
+        return
+    execute_recovery_plan(plan, ledger, clock=clock)
+    for item in plan.items:
+        summary.pending_commits += 1
+        if item.action == ACTION_COMMIT:
+            summary.messages_ok += 1
+            continue
+        summary.recovery_failures += 1
+        summary.errors.append(
+            {
+                "source_ref": item.journal.source_ref
+                if item.journal is not None
+                else f"staging/{item.commit_key}",
+                "code": "RECOVERY_FAILED",
+                "detail": f"{item.action}: {item.reason}"[:2000],
+            }
+        )
+        if item.action == ACTION_QUARANTINE:
+            summary.uncommitted_quarantined += 1
+        elif item.action == ACTION_CLEAN:
+            summary.uncommitted_cleaned += 1
+    for orphan in plan.orphans:
+        if orphan.action == ACTION_QUARANTINE:
+            summary.uncommitted_quarantined += 1
+        elif orphan.action == ACTION_CLEAN:
+            summary.uncommitted_cleaned += 1
+    for failure in plan.execution_errors:
+        summary.recovery_failures += 1
+        summary.errors.append(
+            {
+                "source_ref": failure.get("source_ref") or f"staging/{failure['commit_key']}",
+                "code": failure["code"],
+                "detail": failure["detail"][:2000],
+            }
+        )
 
 
 def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> CollectionResult:
@@ -206,6 +252,10 @@ def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> C
         run_id = ledger.begin_run(started, config.policy_fingerprint)
         summary.run_id = run_id
         try:
+            # Resume any interrupted commits before touching new messages so
+            # object files and ledger references converge first.
+            _reconcile_pending(config, store, ledger, summary, clock)
+
             def unchanged(file: DiscoveredFile) -> bool:
                 if force or not file.digest:
                     return False
@@ -225,9 +275,13 @@ def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> C
 
             for file in outcome.files:
                 try:
-                    message, records = _process_message(file, config, store, known_hashes, summary)
-                    message_id = ledger.upsert_message(message, run_id, config.policy_fingerprint)
-                    ledger.sync_attachments(message_id, records, run_id)
+                    message, records, journal = _process_message(
+                        file, config, store, known_hashes, summary, run_id
+                    )
+                    _, created_paths = complete_message_commit(
+                        config.workdir, store, ledger, journal
+                    )
+                    summary.objects_created += len(created_paths)
                     summary.messages_ok += 1
                 except Exception as exc:
                     error = normalize_error(exc)
@@ -243,7 +297,7 @@ def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> C
                         }
                     )
 
-            manifest_path = _write_manifest(config, ledger, store, run_id)
+            manifest_path = write_manifest(config.workdir, ledger, store, run_id)
             summary.finished_at = iso_utc(clock())
             summary.status = "completed_with_errors" if summary.errors else "completed"
             ledger.finish_run(summary)

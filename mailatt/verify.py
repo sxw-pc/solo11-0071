@@ -9,6 +9,12 @@ from typing import Any
 
 from .errors import LedgerError, StorageError
 from .ledger import Ledger
+from .recovery import (
+    ACTION_CLEAN,
+    JOURNAL_FILENAME,
+    TOMBSTONE_FILENAME,
+    load_journal,
+)
 from .storage import OBJECT_REL_RE, ObjectStore
 from .util import read_json, sha256_file
 
@@ -19,6 +25,8 @@ class VerificationResult:
     ok: bool = False
     checked_objects: int = 0
     checked_references: int = 0
+    pending_commits: int = 0
+    uncommitted_entries: int = 0
     issues: list[dict[str, str]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -27,6 +35,8 @@ class VerificationResult:
             "workdir": str(self.workdir),
             "checked_objects": self.checked_objects,
             "checked_references": self.checked_references,
+            "pending_commits": self.pending_commits,
+            "uncommitted_entries": self.uncommitted_entries,
             "issue_count": len(self.issues),
             "issues": list(self.issues),
         }
@@ -148,6 +158,94 @@ def _check_manifest(
         issues.add("MANIFEST_OMISSION", path, "ledger object is absent from manifest")
 
 
+def _pending_state(workdir: Path, issues: _Issues) -> tuple[set[str], set[str], int, int]:
+    """Scan staging journals and uncommitted quarantine records (read-only).
+
+    Returns the final object paths claimed by valid in-flight journals, the
+    digests preserved in uncommitted quarantine, plus pending/uncommitted
+    counters.  Objects claimed by a journal are reported as PENDING_COMMIT
+    rather than OBJECT_ORPHAN.
+    """
+    claimed: set[str] = set()
+    preserved_digests: set[str] = set()
+    pending = 0
+    uncommitted = 0
+    staging = workdir / "staging"
+    if staging.is_dir() and not staging.is_symlink():
+        try:
+            entries = sorted(staging.iterdir())
+        except OSError as exc:
+            issues.add("STORE_UNREADABLE", "staging", str(exc))
+            entries = []
+        for entry in entries:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            commit_key = entry.name
+            pending += 1
+            try:
+                journal = load_journal(workdir, commit_key)
+            except StorageError as exc:
+                issues.add(exc.code, f"staging/{commit_key}", exc.detail)
+                continue
+            if journal is None:
+                issues.add(
+                    "COMMIT_JOURNAL_INVALID",
+                    f"staging/{commit_key}/{JOURNAL_FILENAME}",
+                    "commit journal is missing",
+                )
+                continue
+            for attachment in journal.attachments:
+                if attachment.final_path:
+                    claimed.add(attachment.final_path)
+            issues.add(
+                "PENDING_COMMIT",
+                f"staging/{commit_key}",
+                f"uncommitted journal for {journal.source_ref}; run mailatt recover",
+            )
+    uncommitted_root = workdir / "uncommitted"
+    if uncommitted_root.is_dir() and not uncommitted_root.is_symlink():
+        try:
+            entries = sorted(uncommitted_root.iterdir())
+        except OSError as exc:
+            issues.add("STORE_UNREADABLE", "uncommitted", str(exc))
+            entries = []
+        for entry in entries:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            uncommitted += 1
+            tombstone = entry / TOMBSTONE_FILENAME
+            if not tombstone.is_file():
+                issues.add(
+                    "UNCOMMITTED_PRESERVED",
+                    f"uncommitted/{entry.name}",
+                    "preserved uncommitted object without tombstone record",
+                )
+                continue
+            try:
+                payload = read_json(tombstone)
+            except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+                issues.add(
+                    "UNCOMMITTED_PRESERVED",
+                    f"uncommitted/{entry.name}/{TOMBSTONE_FILENAME}",
+                    f"tombstone is unreadable: {exc}",
+                )
+                continue
+            action = str(payload.get("action", "")) if isinstance(payload, dict) else ""
+            code = (
+                "UNCOMMITTED_CLEANED"
+                if action == ACTION_CLEAN
+                else "UNCOMMITTED_PRESERVED"
+            )
+            detail = str(payload.get("reason", "")) if isinstance(payload, dict) else ""
+            issues.add(code, f"uncommitted/{entry.name}", detail)
+            objects_dir = entry / "objects"
+            if objects_dir.is_dir() and not objects_dir.is_symlink():
+                for child in objects_dir.iterdir():
+                    if child.is_file() and not child.is_symlink():
+                        preserved_digests.add(child.name)
+    return claimed, preserved_digests, pending, uncommitted
+
+
 def verify_workdir(workdir: Path) -> VerificationResult:
     workdir = workdir.expanduser().resolve(strict=False)
     result = VerificationResult(workdir=workdir)
@@ -157,6 +255,11 @@ def verify_workdir(workdir: Path) -> VerificationResult:
         result.issues = issues.rows()
         return result
     _unexpected_files(workdir, issues)
+    claimed_paths, preserved_digests, pending, uncommitted = _pending_state(
+        workdir, issues
+    )
+    result.pending_commits = pending
+    result.uncommitted_entries = uncommitted
     try:
         store = ObjectStore(workdir, create=False)
         actual = _actual_object_digests(store, issues)
@@ -173,7 +276,18 @@ def verify_workdir(workdir: Path) -> VerificationResult:
         if path not in actual:
             issues.add("OBJECT_MISSING", path, f"referenced object {digest} is missing")
     for path in sorted(set(actual) - set(expected)):
-        issues.add("OBJECT_ORPHAN", path, "object file has no ledger reference")
+        if path in claimed_paths:
+            issues.add(
+                "PENDING_COMMIT_OBJECT",
+                path,
+                "object is promoted but its commit journal is not yet ledger-committed",
+            )
+        elif path.rsplit("/", 1)[-1] in preserved_digests:
+            # Already accounted for in uncommitted/; the original location may
+            # remain until cleanup or be absent after preservation.
+            continue
+        else:
+            issues.add("OBJECT_ORPHAN", path, "object file has no ledger reference")
     entries = _load_manifest(workdir, issues)
     if entries is not None:
         _check_manifest(entries, actual, expected, issues)
