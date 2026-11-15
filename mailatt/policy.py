@@ -65,6 +65,16 @@ def evaluate_candidate(
         return _decision(Decision.REJECTED, "extension_not_allowed", "extension is not allowed")
     if not media_type_allowed(candidate.media_type, policy.allowed_media_types):
         return _decision(Decision.REJECTED, "mime_not_allowed", "media type is not allowed")
+    if (
+        candidate.related_inline_only
+        and candidate.related_status == "ambiguous"
+        and policy.related_retention == "body-dependency"
+    ):
+        return _decision(
+            Decision.QUARANTINED,
+            "related_reference_ambiguous",
+            "inline resource has an ambiguous Content-ID relation and is isolated",
+        )
     if policy.skip_duplicate_content and candidate.sha256 in known_hashes:
         return _decision(Decision.DUPLICATE, "duplicate_content", "content already archived")
     return _decision(Decision.ACCEPTED, "accepted", "passed all attachment gates")
@@ -107,4 +117,5 @@ def summarize_policy(policy: PolicyConfig) -> dict[str, object]:
         "allow_inline_attachments": policy.allow_inline_attachments,
         "reject_path_traversal": policy.reject_path_traversal,
         "skip_duplicate_content": policy.skip_duplicate_content,
+        "related_retention": policy.related_retention,
     }

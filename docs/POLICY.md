@@ -21,7 +21,10 @@
 8. **阻断扩展名**：命中 `blocked_extensions` 时拒绝。
 9. **允许扩展名**：不在 `allowed_extensions` 中时拒绝。比较不区分大小写。
 10. **允许 MIME**：不在 `allowed_media_types` 中时拒绝。支持 `image/*` 通配。
-11. **重复内容**：`skip_duplicate_content=true` 且摘要已存在于已归档集合时，
+11. **inline 关系歧义**：`related_status=ambiguous` 时，`body-dependency` 路线判定为
+    `quarantined / related_reference_ambiguous`，字节只进隔离区；`full-forensics`
+    路线不因歧义拒绝，保留原始部件。
+12. **重复内容**：`skip_duplicate_content=true` 且摘要已存在于已归档集合时，
     判定为 `duplicate / duplicate_content`，复用已有对象。
 
 ## 判定结果
@@ -29,12 +32,26 @@
 | 状态 | 写对象 | 写台账 | 含义 |
 | --- | --- | --- | --- |
 | `accepted` | `objects/` | 是 | 通过全部门禁 |
-| `quarantined` | `quarantine/` | 是 | 可疑扩展名，仅隔离保存 |
+| `quarantined` | `quarantine/` | 是 | 可疑扩展名或 inline 关系歧义，仅隔离保存 |
 | `rejected` | 否 | 是 | 策略未通过 |
 | `duplicate` | 否（复用） | 是 | 内容摘要已归档 |
 
 被拒绝的附件仍保留名称、MIME、大小、原因码等元数据，便于审计。隔离对象可从台账和
 报告查看，但只读复核台不提供下载。
+
+## inline 资源保留路线
+
+`policy.related_retention` 决定由 `multipart/related` 中 HTML 正文引用的 inline 资源
+如何保留：
+
+| 值 | 行为 |
+| --- | --- |
+| `body-dependency`（默认） | 只保留同一 related 根 HTML 引用且无歧义的资源 |
+| `full-forensics` | 保留全部 inline 资源，包括未引用的 tracker |
+
+两种路线下，引用解析都按每个 `multipart/related` 容器独立进行，不会用全邮件范围的
+Content-ID 字典跨树绑定。重复 Content-ID、缺失引用等问题连同树路径写入台账与报告。
+详见 `docs/related-resources.md`。
 
 ## 文件名处理
 

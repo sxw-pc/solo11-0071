@@ -12,9 +12,14 @@
 2. `discovery.py` 稳定排序扫描 `.eml` 树或 Maildir 的 `cur/`、`new/`，忽略符号链接，
    计算邮件 SHA-256，并通过回调跳过摘要与策略指纹均未变的成功邮件。
 3. `mime.py` 使用标准库 `email` 解析 MIME，遍历嵌套 `message/rfc822`，解码 RFC 2047
-   文件名与主题，提取附件字节。致命边界缺陷转换为稳定 `MALFORMED_MIME` 错误。
-4. `policy.py` 按固定顺序执行路径、数量、inline、大小、扩展名、MIME、重复内容门禁，
-   产出 `accepted`、`quarantined`、`rejected` 或 `duplicate`。
+   文件名与主题，提取附件字节。对 `multipart/related` 子树，先由 `related.py` 逐个
+   容器解析 HTML 正文的 `cid:` 引用，再生成 inline 资源候选。致命边界缺陷转换为稳定
+   `MALFORMED_MIME` 错误，但 related 容器自身的边界损坏只隔离该子树。
+4. `related.py` 以每个 `multipart/related` 为单位选择根节点（`start` 或首个子节点），
+   仅在该容器内建立 Content-ID 索引，返回关系元数据与带树路径的引用问题。它不跨容器
+   共享索引，也不猜测重复或缺失的引用。
+5. `policy.py` 按固定顺序执行路径、数量、inline、大小、扩展名、MIME、关系歧义、重复
+   内容门禁，产出 `accepted`、`quarantined`、`rejected` 或 `duplicate`。
 5. `storage.py` 以 SHA-256 内容寻址写对象。归档与隔离分目录，使用同目录临时文件、
    `fsync` 和 `os.replace` 原子落盘；已存在同摘要对象时复用。
 6. `ledger.py` 以事务写入 `runs`、`messages`、`attachments`。消息唯一键为
@@ -32,6 +37,7 @@
 | --- | --- | --- |
 | `discovery` | 枚举、排序、摘要、增量判定 | 解析 MIME |
 | `mime` | 解析与附件候选 | 策略决策 |
+| `related` | 按容器解析 inline `cid:` 关系 | 策略决策、磁盘写入 |
 | `policy` | 纯函数式门禁 | 磁盘写入 |
 | `storage` | 对象字节与路径安全 | 台账事务 |
 | `ledger` | SQLite 持久化与查询 | 内存策略 |
@@ -65,6 +71,7 @@ candidate -> accepted    -> objects/<prefix>/<sha>
 ## 确定性
 
 - 来源按名称排序，文件按 source + POSIX 相对路径排序，附件按 MIME 遍历顺序编号。
+- MIME 树路径为 1 起始点分序号（根为 `/`），按数值段排序；关系问题与候选均带路径。
 - JSON 以 `sort_keys=True` 写出；查询使用显式 `ORDER BY`。
 - 对象路径只由内容摘要决定；台账使用唯一约束和 `ON CONFLICT` 更新。
 - 运行时间与 `run_id` 会被记录，但同一输入的字段和对象集合稳定可复现。

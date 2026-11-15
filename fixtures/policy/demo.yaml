@@ -60,3 +60,4 @@ policy:
   allow_inline_attachments: true
   reject_path_traversal: true
   skip_duplicate_content: true
+  related_retention: body-dependency

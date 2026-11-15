@@ -11,6 +11,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .config import Config
 from .ledger import Ledger
+from .related import path_sort_key
 from .util import atomic_write_json, atomic_write_text, iso_utc, read_json, utc_now
 
 REPORT_SCHEMA = "1.0"
@@ -35,6 +36,26 @@ def _parse_warnings(value: str) -> list[str]:
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
 
+def _parse_related_issues(value: str) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(value or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    issues = [item for item in parsed if isinstance(item, dict)]
+    return sorted(
+        issues,
+        key=lambda item: (
+            path_sort_key(str(item.get("related_path", ""))),
+            str(item.get("code", "")),
+            path_sort_key(str(item.get("root_path", ""))),
+            str(item.get("content_id", "")),
+            tuple(path_sort_key(str(path)) for path in item.get("part_paths", []) or []),
+        ),
+    )
+
+
 def build_payload(config: Config, ledger: Ledger, generated_at: str) -> dict[str, Any]:
     messages = ledger.all_messages()
     attachments = ledger.all_attachments()
@@ -44,9 +65,26 @@ def build_payload(config: Config, ledger: Ledger, generated_at: str) -> dict[str
 
     for message in messages:
         message["warnings"] = _parse_warnings(str(message.get("warnings_json", "[]")))
+        message["related_issues"] = _parse_related_issues(
+            str(message.get("related_issues_json", "[]"))
+        )
         message["attachment_count"] = sum(
             1 for item in attachments if item["message_id"] == message["id"]
         )
+    related_issues = [
+        {"source_name": message["source_name"], "relative_path": message["relative_path"],
+         **issue}
+        for message in messages
+        for issue in message["related_issues"]
+    ]
+    related_issues.sort(
+        key=lambda item: (
+            item["source_name"],
+            item["relative_path"],
+            path_sort_key(str(item.get("related_path", ""))),
+            str(item.get("code", "")),
+        )
+    )
     message_counts = {
         "total": len(messages),
         "ok": sum(item["status"] == "ok" for item in messages),
@@ -55,6 +93,15 @@ def build_payload(config: Config, ledger: Ledger, generated_at: str) -> dict[str
     by_status = {key: 0 for key in ("accepted", "quarantined", "rejected", "duplicate")}
     for item in attachments:
         by_status[item["status"]] = by_status.get(item["status"], 0) + 1
+    # Relation metadata is an audit aid; older ledgers do not carry the columns.
+    for item in attachments:
+        for key, default in (
+            ("related_root_path", ""), ("related_part_path", ""),
+            ("related_container_path", ""), ("content_id", ""),
+            ("reference_count", 0), ("related_status", ""),
+        ):
+            item.setdefault(key, default)
+        item["reference_count"] = int(item.get("reference_count") or 0)
     objects = manifest.get("objects", [])
     if not isinstance(objects, list):
         objects = []
@@ -85,6 +132,7 @@ def build_payload(config: Config, ledger: Ledger, generated_at: str) -> dict[str
         "messages": messages,
         "attachments": attachments,
         "objects": objects,
+        "related_issues": related_issues,
         "errors": errors,
     }
 
@@ -118,7 +166,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         lines.append(f"| 附件 {key} | {summary['attachments']['by_status'].get(key, 0)} |")
     lines.extend(
         [
-            f"| 归档对象 | {summary['objects']['accepted']} |",
+            "| 归档对象 | {0} |".format(summary['objects']['accepted']),
             f"| 隔离对象 | {summary['objects']['quarantined']} |",
             f"| 历史运行数 | {summary['runs']} |",
             "",
@@ -137,7 +185,51 @@ def render_markdown(payload: dict[str, Any]) -> str:
                 item["size"], _md(item["status"]), _md(item["reason_code"]), _md(path),
             )
         )
-    lines.extend(["", "## 邮件台账", "", "| 来源 | 主题 | 发件人 | 状态 | 排除数 |", "| --- | --- | --- | --- | ---: |"])
+    lines.extend(
+        [
+            "",
+            "## inline 资源关系",
+            "",
+            "| 来源 | related 容器 | 根路径 | 部件路径 | Content-ID | 引用数 | 状态 | 原因 |",
+            "| --- | --- | --- | --- | --- | ---: | --- | --- |",
+        ]
+    )
+    related_rows = [item for item in payload["attachments"] if item.get("related_part_path")]
+    if related_rows:
+        for item in related_rows:
+            source = f"{item['message_source']}/{item['message_path']}"
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                    _md(source), _md(item.get("related_container_path", "")),
+                    _md(item.get("related_root_path", "")),
+                    _md(item.get("related_part_path", "")),
+                    _md(item.get("content_id", "")), item.get("reference_count", 0),
+                    _md(item.get("related_status", "")), _md(item["reason_code"]),
+                )
+            )
+    else:
+        lines.append("| — | — | — | — | — | 0 | — | 本批次没有 inline 关系候选 |")
+    lines.extend(["", "## inline 引用问题", ""])
+    if payload["related_issues"]:
+        lines.append("| 来源 | 代码 | related 路径 | 根路径 | Content-ID | 部件路径 | 说明 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for item in payload["related_issues"]:
+            source = f"{item['source_name']}/{item['relative_path']}"
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} | {} |".format(
+                    _md(source), _md(item.get("code", "")),
+                    _md(item.get("related_path", "")), _md(item.get("root_path", "")),
+                    _md(item.get("content_id", "")),
+                    _md(", ".join(item.get("part_paths", []) or [])),
+                    _md(item.get("detail", "")),
+                )
+            )
+    else:
+        lines.append("本批次没有 inline 引用歧义或缺失。")
+    lines.extend(
+        ["", "## 邮件台账", "", "| 来源 | 主题 | 发件人 | 状态 | 排除数 |",
+         "| --- | --- | --- | --- | ---: |"]
+    )
     for item in payload["messages"]:
         source = f"{item['source_name']}/{item['relative_path']}"
         lines.append(

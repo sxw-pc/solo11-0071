@@ -11,10 +11,12 @@ from typing import Any, Iterable
 import yaml
 
 from .errors import ConfigurationError
+from .related import VALID_RETENTIONS
 from .util import is_within, sha256_bytes
 
 SOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 TOP_LEVEL_KEYS = {"version", "sources", "policy", "workdir"}
+DEFAULT_RELATED_RETENTION = "body-dependency"
 
 DEFAULT_QUARANTINE_EXTENSIONS = (
     ".bat", ".cmd", ".com", ".cpl", ".dll", ".docm", ".exe", ".hta",
@@ -58,6 +60,7 @@ class PolicyConfig:
     allow_inline_attachments: bool = True
     reject_path_traversal: bool = True
     skip_duplicate_content: bool = True
+    related_retention: str = DEFAULT_RELATED_RETENTION
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +78,7 @@ class PolicyConfig:
             "allow_inline_attachments": self.allow_inline_attachments,
             "reject_path_traversal": self.reject_path_traversal,
             "skip_duplicate_content": self.skip_duplicate_content,
+            "related_retention": self.related_retention,
         }
 
 
@@ -179,6 +183,13 @@ def _policy_from_mapping(raw: Any) -> PolicyConfig:
     ):
         if key in raw:
             values[key] = _as_bool(raw[key], key)
+    if "related_retention" in raw:
+        retention = raw["related_retention"]
+        if not isinstance(retention, str) or retention not in VALID_RETENTIONS:
+            raise _fail(
+                "policy.related_retention must be one of: " + ", ".join(VALID_RETENTIONS)
+            )
+        values["related_retention"] = retention
     policy = replace(PolicyConfig(), **values)
     if policy.min_file_bytes > policy.max_file_bytes:
         raise _fail("policy.min_file_bytes cannot exceed max_file_bytes")

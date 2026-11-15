@@ -132,7 +132,8 @@ def create_app(workdir: Path | str) -> Flask:
         fields = (
             "id", "message_source", "message_path", "part_id", "sha256", "size",
             "safe_filename", "media_type", "status", "reason_code", "object_path",
-            "quarantine_path",
+            "quarantine_path", "related_root_path", "related_part_path",
+            "related_container_path", "content_id", "reference_count", "related_status",
         )
         return jsonify({"count": len(rows), "attachments": [
             {key: row.get(key, "") for key in fields} for row in rows

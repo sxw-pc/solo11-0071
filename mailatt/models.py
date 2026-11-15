@@ -25,6 +25,35 @@ class StorageKind(str, Enum):
     QUARANTINE = "quarantine"
 
 
+class RelatedRetention(str, Enum):
+    """Business retention route for inline resources in multipart/related."""
+
+    BODY_DEPENDENCY = "body-dependency"
+    FULL_FORENSICS = "full-forensics"
+
+
+@dataclass(frozen=True)
+class RelatedReferenceIssue:
+    """A non-guessed relationship problem anchored to a MIME tree path."""
+
+    code: str
+    related_path: str
+    root_path: str = ""
+    content_id: str = ""
+    part_paths: tuple[str, ...] = ()
+    detail: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "related_path": self.related_path,
+            "root_path": self.root_path,
+            "content_id": self.content_id,
+            "part_paths": list(self.part_paths),
+            "detail": self.detail,
+        }
+
+
 @dataclass(frozen=True)
 class DiscoveredFile:
     source_name: str
@@ -58,6 +87,14 @@ class AttachmentCandidate:
     nested_depth: int = 0
     traversal_detected: bool = False
     warnings: tuple[str, ...] = ()
+    related_root_path: str = ""
+    related_part_path: str = ""
+    related_container_path: str = ""
+    content_id: str = ""
+    reference_count: int = 0
+    related_status: str = ""
+    related_inline_only: bool = False
+    related_issue_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,6 +105,7 @@ class ParsedMessage:
     sent_at: str
     candidates: tuple[AttachmentCandidate, ...]
     warnings: tuple[str, ...] = ()
+    related_issues: tuple[RelatedReferenceIssue, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -104,6 +142,7 @@ class MessageRecord:
     error_code: str = ""
     error_detail: str = ""
     warnings: tuple[str, ...] = ()
+    related_issues: tuple[RelatedReferenceIssue, ...] = ()
 
     @property
     def source_ref(self) -> str:
@@ -125,6 +164,12 @@ class AttachmentRecord:
     reason: str
     object_path: str = ""
     quarantine_path: str = ""
+    related_root_path: str = ""
+    related_part_path: str = ""
+    related_container_path: str = ""
+    content_id: str = ""
+    reference_count: int = 0
+    related_status: str = ""
 
 
 @dataclass
@@ -174,6 +219,8 @@ class RunSummary:
 
 @dataclass(frozen=True)
 class ObjectManifestEntry:
+    """One deduplicated stored object; per-part relations live in ``parts``."""
+
     sha256: str
     size: int
     status: str

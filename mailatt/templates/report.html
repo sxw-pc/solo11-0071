@@ -127,6 +127,52 @@
     {% else %}<p class="empty">没有附件判定记录。</p>{% endif %}
   </div>
 
+  <h2>inline 资源关系</h2>
+  <div class="panel">
+    {% set related_rows = report.attachments | selectattr("related_part_path") | list %}
+    {% if related_rows %}
+    <table>
+      <thead><tr><th>状态</th><th>来源</th><th>related 容器</th><th>根路径</th><th>部件路径</th><th>Content-ID</th><th>引用数</th><th>关系</th></tr></thead>
+      <tbody>
+      {% for item in related_rows %}
+        <tr>
+          <td><span class="tag s-{{ item.status }}">{{ item.status }}</span></td>
+          <td class="mono">{{ item.message_source }}/{{ item.message_path }}</td>
+          <td class="mono">{{ item.related_container_path or "—" }}</td>
+          <td class="mono">{{ item.related_root_path or "—" }}</td>
+          <td class="mono">{{ item.related_part_path }}</td>
+          <td class="mono">{{ item.content_id or "—" }}</td>
+          <td>{{ item.reference_count }}</td>
+          <td><span class="tag s-{{ 'accepted' if item.related_status == 'referenced' else ('rejected' if item.related_status == 'ambiguous' else 'duplicate') }}">{{ item.related_status or "—" }}</span></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty">本批次没有 inline 关系候选。</p>{% endif %}
+  </div>
+
+  <h2>inline 引用问题</h2>
+  <div class="panel">
+    {% if report.related_issues %}
+    <table>
+      <thead><tr><th>来源</th><th>代码</th><th>related 路径</th><th>根路径</th><th>Content-ID</th><th>部件路径</th><th>说明</th></tr></thead>
+      <tbody>
+      {% for item in report.related_issues %}
+        <tr>
+          <td class="mono">{{ item.source_name }}/{{ item.relative_path }}</td>
+          <td class="mono">{{ item.code }}</td>
+          <td class="mono">{{ item.related_path }}</td>
+          <td class="mono">{{ item.root_path or "—" }}</td>
+          <td class="mono">{{ item.content_id or "—" }}</td>
+          <td class="mono">{{ item.part_paths | join(", ") or "—" }}</td>
+          <td>{{ item.detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty">本批次没有 inline 引用歧义或缺失。</p>{% endif %}
+  </div>
+
   <h2>邮件台账</h2>
   <div class="panel">
     <table>

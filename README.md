@@ -44,10 +44,10 @@ python -m mailatt serve --workdir .mailatt-demo
 稳定排序发现 -> 计算邮件哈希 -> 增量跳过
         |
         v
-MIME 解析（嵌套邮件、RFC 2047、损坏降级）
+MIME 解析（嵌套邮件、RFC 2047、related inline 资源、损坏降级）
         |
         v
-策略门禁（路径、数量、大小、扩展名、MIME、重复内容）
+策略门禁（路径、数量、大小、扩展名、MIME、inline 关系、重复内容）
         |
         +--> accepted    -> objects/<sha前2位>/<sha256>
         +--> quarantined -> quarantine/<sha前2位>/<sha256>
@@ -89,11 +89,26 @@ policy:
   allow_inline_attachments: true
   reject_path_traversal: true
   skip_duplicate_content: true
+  related_retention: body-dependency   # 或 full-forensics
 ```
 
 完整示例见 `fixtures/policy/demo.yaml`。`kind` 可取 `auto`、`eml`、`maildir`。
 `auto` 在存在 `cur/` 或 `new/` 时按 Maildir 处理。数据流与模块边界见
 `docs/ARCHITECTURE.md`，门禁顺序见 `docs/POLICY.md`。
+
+### multipart/related inline 资源
+
+HTML 正文通过 `cid:` 引用的内嵌图片通常没有文件名，旧逻辑会跳过。`related_retention`
+选择保留路线：
+
+| 值 | 行为 |
+| --- | --- |
+| `body-dependency`（默认） | 只保留同一 related 根 HTML 引用且无歧义的资源 |
+| `full-forensics` | 保留全部 inline 资源，包括未引用的跟踪像素 |
+
+引用解析按每个 `multipart/related` 容器独立进行：根节点优先取 `start`，缺省取首个子
+节点；仅在该容器内建立 Content-ID 索引。重复 Content-ID、缺失引用等问题不会猜测，
+而是以 MIME 树路径写入台账与报告。细节见 `docs/related-resources.md`。
 
 ## 命令
 
@@ -130,8 +145,9 @@ PATCH、DELETE 均返回 405。服务不允许绑定 `0.0.0.0` 或其他非回�
     └── report.html             # 内联 CSS，无 CDN / 外部资源
 ```
 
-`manifest.json` 只列出当前实际存在且被台账引用的对象。`verify` 会重算全部对象哈希，
-检查缺失、损坏、孤儿对象、manifest 与台账不一致，以及不安全路径。发现问题时退出码为 1。
+`manifest.json` 的 `objects` 只列出当前实际存在且被台账引用的对象；`parts` 数组逐部件
+保留判定与 inline 关系元数据。`verify` 会重算全部对象哈希，检查缺失、损坏、孤儿对象、
+manifest 与台账不一致，以及不安全路径。发现问题时退出码为 1。
 
 ## 测试
 
@@ -139,9 +155,9 @@ PATCH、DELETE 均返回 405。服务不允许绑定 `0.0.0.0` 或其他非回�
 pytest -q
 ```
 
-测试覆盖配置校验、稳定发现、增量跳过、MIME 与嵌套邮件、RFC 2047、策略门禁、
-内容寻址去重、SQLite 幂等、失败隔离、完整性校验、报告转义、只读 Web 服务和 CLI。
-测试不访问网络，全部使用本地合成 fixture。
+测试覆盖配置校验、稳定发现、增量跳过、MIME 与嵌套邮件、RFC 2047、related inline
+关系解析与两种保留路线、策略门禁、内容寻址去重、SQLite 幂等与迁移、失败隔离、
+完整性校验、报告转义、只读 Web 服务和 CLI。测试不访问网络，全部使用本地合成 fixture。
 
 ## 明确不做
 

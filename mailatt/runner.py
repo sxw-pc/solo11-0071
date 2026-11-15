@@ -25,6 +25,7 @@ from .models import (
     StorageKind,
 )
 from .policy import assess_candidates
+from .related import path_sort_key
 from .report import generate_reports
 from .storage import ObjectStore
 from .util import atomic_write_json, iso_utc, utc_now
@@ -92,6 +93,12 @@ def _attachment_record(
         reason=decision.reason,
         object_path=object_path,
         quarantine_path=quarantine_path,
+        related_root_path=candidate.related_root_path,
+        related_part_path=candidate.related_part_path,
+        related_container_path=candidate.related_container_path,
+        content_id=candidate.content_id,
+        reference_count=candidate.reference_count,
+        related_status=candidate.related_status,
     )
 
 
@@ -109,6 +116,7 @@ def _process_message(
             allow_nested_messages=config.policy.allow_nested_messages,
             max_nested_depth=config.policy.max_nested_depth,
             max_filename_length=config.policy.max_filename_length,
+            related_retention=config.policy.related_retention,
         ),
     )
     decisions = assess_candidates(parsed.candidates, config.policy, known_hashes)
@@ -154,6 +162,7 @@ def _process_message(
         sent_at=parsed.sent_at,
         status=MessageStatus.OK,
         warnings=parsed.warnings,
+        related_issues=parsed.related_issues,
     )
     return message, records
 
@@ -181,13 +190,54 @@ def _manifest_entries(ledger: Ledger, store: ObjectStore) -> list[ObjectManifest
     return sorted(by_path.values(), key=lambda item: (item.status, item.path))
 
 
+def _manifest_parts(ledger: Ledger) -> list[dict[str, object]]:
+    """Per-candidate audit rows, one per attachment part, stably sorted.
+
+    ``objects`` is deduplicated by stored path for verification; this array
+    keeps every judged part visible, including two parts that share one digest.
+    """
+    rows = []
+    for row in ledger.all_attachments():
+        rows.append(
+            {
+                "source_ref": f"{row['message_source']}/{row['message_path']}",
+                "part_id": row["part_id"],
+                "sha256": row["sha256"],
+                "size": row["size"],
+                "status": row["status"],
+                "reason_code": row["reason_code"],
+                "media_type": row["media_type"],
+                "safe_filename": row["safe_filename"],
+                "related_root_path": row.get("related_root_path", "") or "",
+                "related_part_path": row.get("related_part_path", "") or "",
+                "related_container_path": row.get("related_container_path", "") or "",
+                "content_id": row.get("content_id", "") or "",
+                "reference_count": int(row.get("reference_count", 0) or 0),
+                "related_status": row.get("related_status", "") or "",
+                "object_path": row.get("object_path", "") or "",
+                "quarantine_path": row.get("quarantine_path", "") or "",
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda item: (
+            str(item["source_ref"]),
+            path_sort_key(str(item["related_part_path"])),
+            str(item["part_id"]),
+        ),
+    )
+
+
 def _write_manifest(config: Config, ledger: Ledger, store: ObjectStore, run_id: str) -> Path:
     entries = _manifest_entries(ledger, store)
+    parts = _manifest_parts(ledger)
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "run_id": run_id,
         "object_count": len(entries),
         "objects": [entry.as_dict() for entry in entries],
+        "part_count": len(parts),
+        "parts": parts,
     }
     path = config.workdir / "manifest.json"
     try:

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS messages (
     error_code TEXT NOT NULL DEFAULT '',
     error_detail TEXT NOT NULL DEFAULT '',
     warnings_json TEXT NOT NULL DEFAULT '[]',
+    related_issues_json TEXT NOT NULL DEFAULT '[]',
     policy_hash TEXT NOT NULL,
     first_seen_run TEXT NOT NULL,
     last_seen_run TEXT NOT NULL,
@@ -55,6 +56,12 @@ CREATE TABLE IF NOT EXISTS attachments (
     reason TEXT NOT NULL DEFAULT '',
     object_path TEXT NOT NULL DEFAULT '',
     quarantine_path TEXT NOT NULL DEFAULT '',
+    related_root_path TEXT NOT NULL DEFAULT '',
+    related_part_path TEXT NOT NULL DEFAULT '',
+    related_container_path TEXT NOT NULL DEFAULT '',
+    content_id TEXT NOT NULL DEFAULT '',
+    reference_count INTEGER NOT NULL DEFAULT 0,
+    related_status TEXT NOT NULL DEFAULT '',
     first_seen_run TEXT NOT NULL,
     last_seen_run TEXT NOT NULL,
     UNIQUE(message_id, part_id)
@@ -63,6 +70,18 @@ CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source_name, relative
 CREATE INDEX IF NOT EXISTS idx_attachments_sha ON attachments(sha256);
 CREATE INDEX IF NOT EXISTS idx_attachments_status ON attachments(status);
 """
+
+ATTACHMENT_EXTRA_COLUMNS = (
+    ("related_root_path", "TEXT NOT NULL DEFAULT ''"),
+    ("related_part_path", "TEXT NOT NULL DEFAULT ''"),
+    ("related_container_path", "TEXT NOT NULL DEFAULT ''"),
+    ("content_id", "TEXT NOT NULL DEFAULT ''"),
+    ("reference_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("related_status", "TEXT NOT NULL DEFAULT ''"),
+)
+MESSAGE_EXTRA_COLUMNS = (
+    ("related_issues_json", "TEXT NOT NULL DEFAULT '[]'"),
+)
 
 
 class Ledger:
@@ -85,10 +104,25 @@ class Ledger:
                 self.conn.execute("PRAGMA foreign_keys = ON")
                 self.conn.execute("PRAGMA busy_timeout = 5000")
                 self.conn.executescript(SCHEMA)
+                self._migrate_schema()
                 self.conn.commit()
             except sqlite3.Error as exc:
                 raise LedgerError(f"cannot initialise ledger: {exc}") from exc
         self.conn.row_factory = sqlite3.Row
+
+    def _migrate_schema(self) -> None:
+        """Add relation audit columns to ledgers created by older versions."""
+        for table, columns in (
+            ("attachments", ATTACHMENT_EXTRA_COLUMNS),
+            ("messages", MESSAGE_EXTRA_COLUMNS),
+        ):
+            existing = {
+                row[1]
+                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for name, definition in columns:
+                if name not in existing:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def close(self) -> None:
         try:
@@ -148,24 +182,30 @@ class Ledger:
 
     def upsert_message(self, record: MessageRecord, run_id: str, policy_hash: str) -> int:
         warnings = json.dumps(list(record.warnings), ensure_ascii=False, sort_keys=True)
+        issues = json.dumps(
+            [item.as_dict() for item in record.related_issues],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         try:
             self.conn.execute(
                 """INSERT INTO messages(
                     source_name, relative_path, digest, size, message_id, subject, sender,
-                    sent_at, status, error_code, error_detail, warnings_json, policy_hash,
-                    first_seen_run, last_seen_run)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sent_at, status, error_code, error_detail, warnings_json,
+                    related_issues_json, policy_hash, first_seen_run, last_seen_run)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_name, relative_path) DO UPDATE SET
                     digest=excluded.digest, size=excluded.size, message_id=excluded.message_id,
                     subject=excluded.subject, sender=excluded.sender, sent_at=excluded.sent_at,
                     status=excluded.status, error_code=excluded.error_code,
                     error_detail=excluded.error_detail, warnings_json=excluded.warnings_json,
+                    related_issues_json=excluded.related_issues_json,
                     policy_hash=excluded.policy_hash, last_seen_run=excluded.last_seen_run""",
                 (
                     record.source_name, record.relative_path, record.digest, record.size,
                     record.message_id, record.subject, record.sender, record.sent_at,
                     record.status.value, record.error_code, record.error_detail, warnings,
-                    policy_hash, run_id, run_id,
+                    issues, policy_hash, run_id, run_id,
                 ),
             )
             self.conn.commit()
@@ -189,8 +229,10 @@ class Ledger:
                     """INSERT INTO attachments(
                         message_id, part_id, sha256, size, filename, safe_filename, media_type,
                         disposition, nested_depth, status, reason_code, reason, object_path,
-                        quarantine_path, first_seen_run, last_seen_run)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        quarantine_path, related_root_path, related_part_path,
+                        related_container_path, content_id, reference_count, related_status,
+                        first_seen_run, last_seen_run)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(message_id, part_id) DO UPDATE SET
                         sha256=excluded.sha256, size=excluded.size, filename=excluded.filename,
                         safe_filename=excluded.safe_filename, media_type=excluded.media_type,
@@ -198,12 +240,21 @@ class Ledger:
                         status=excluded.status, reason_code=excluded.reason_code,
                         reason=excluded.reason, object_path=excluded.object_path,
                         quarantine_path=excluded.quarantine_path,
+                        related_root_path=excluded.related_root_path,
+                        related_part_path=excluded.related_part_path,
+                        related_container_path=excluded.related_container_path,
+                        content_id=excluded.content_id,
+                        reference_count=excluded.reference_count,
+                        related_status=excluded.related_status,
                         last_seen_run=excluded.last_seen_run""",
                     (
                         message_id, item.part_id, item.sha256, item.size, item.filename,
                         item.safe_filename, item.media_type, item.disposition, item.nested_depth,
                         item.status.value, item.reason_code, item.reason, item.object_path,
-                        item.quarantine_path, run_id, run_id,
+                        item.quarantine_path, item.related_root_path, item.related_part_path,
+                        item.related_container_path, item.content_id, item.reference_count,
+                        item.related_status,
+                        run_id, run_id,
                     ),
                 )
             if rows:
