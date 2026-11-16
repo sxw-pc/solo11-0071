@@ -32,6 +32,28 @@ class DiscoveredFile:
     absolute_path: Path
     size: int
     digest: str
+    # mbox slices only: byte offset of the message inside the container and
+    # the dialect used to unescape it.  slice_offset=None means "whole file".
+    slice_offset: int | None = None
+    mbox_dialect: str = ""
+
+    @property
+    def source_ref(self) -> str:
+        return f"{self.source_name}/{self.relative_path}"
+
+
+@dataclass(frozen=True)
+class DiscoveredSegment:
+    """An mbox container region that could not be proven and is quarantined."""
+
+    source_name: str
+    relative_path: str
+    absolute_path: Path
+    byte_offset: int
+    size: int
+    digest: str
+    reason: str
+    detail: str
 
     @property
     def source_ref(self) -> str:
@@ -43,6 +65,7 @@ class DiscoveryOutcome:
     files: tuple[DiscoveredFile, ...]
     skipped_count: int
     ignored_symlinks: int
+    segments: tuple[DiscoveredSegment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -144,6 +167,7 @@ class RunSummary:
     duplicates: int = 0
     objects_created: int = 0
     ignored_symlinks: int = 0
+    mbox_segments_quarantined: int = 0
     errors: list[dict[str, str]] = field(default_factory=list)
 
     @property
@@ -168,6 +192,7 @@ class RunSummary:
             "duplicates": self.duplicates,
             "objects_created": self.objects_created,
             "ignored_symlinks": self.ignored_symlinks,
+            "mbox_segments_quarantined": self.mbox_segments_quarantined,
             "errors": list(self.errors),
         }
 

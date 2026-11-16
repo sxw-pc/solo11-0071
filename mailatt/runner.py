@@ -11,12 +11,14 @@ from .config import Config
 from .discovery import discover
 from .errors import MimeParseError, StorageError, normalize_error
 from .ledger import Ledger
+from .mbox import unescape_message
 from .mime import MimeOptions, parse_message
 from .models import (
     AttachmentCandidate,
     AttachmentRecord,
     Decision,
     DiscoveredFile,
+    DiscoveredSegment,
     MessageRecord,
     MessageStatus,
     ObjectManifestEntry,
@@ -27,7 +29,7 @@ from .models import (
 from .policy import assess_candidates
 from .report import generate_reports
 from .storage import ObjectStore
-from .util import atomic_write_json, iso_utc, utc_now
+from .util import atomic_write_json, iso_utc, sha256_bytes, utc_now
 
 Clock = Callable[[], datetime]
 
@@ -56,18 +58,57 @@ def _message_error(file: DiscoveredFile, exc: BaseException) -> MessageRecord:
     )
 
 
+def _segment_error(segment: DiscoveredSegment) -> MessageRecord:
+    return MessageRecord(
+        source_name=segment.source_name,
+        relative_path=segment.relative_path,
+        digest=segment.digest,
+        size=segment.size,
+        message_id="",
+        subject="",
+        sender="",
+        sent_at="",
+        status=MessageStatus.ERROR,
+        error_code="MBOX_SEGMENT_QUARANTINED",
+        error_detail=segment.detail[:2000],
+    )
+
+
 def _read_file(file: DiscoveredFile, max_bytes: int) -> bytes:
     if file.size > max_bytes:
         raise MimeParseError(
             f"message size {file.size} exceeds {max_bytes}", code="MESSAGE_TOO_LARGE"
         )
     try:
-        data = file.absolute_path.read_bytes()
+        if file.slice_offset is None:
+            data = file.absolute_path.read_bytes()
+        else:
+            # mbox slice: read exactly the recorded byte range of the container.
+            with file.absolute_path.open("rb") as handle:
+                handle.seek(file.slice_offset)
+                data = handle.read(file.size)
     except OSError as exc:
         raise MimeParseError(f"cannot read message: {exc}", code="MESSAGE_FAILED") from exc
+    if file.slice_offset is not None and len(data) != file.size:
+        raise MimeParseError(
+            "mbox container changed during collection", code="MESSAGE_FAILED"
+        )
     if len(data) > max_bytes:
         raise MimeParseError(
             f"message size {len(data)} exceeds {max_bytes}", code="MESSAGE_TOO_LARGE"
+        )
+    return data
+
+
+def _message_bytes(file: DiscoveredFile, max_bytes: int) -> bytes:
+    """Read a message and, for mbox slices, unescape and verify it in place."""
+    data = _read_file(file, max_bytes)
+    if not file.mbox_dialect:
+        return data
+    data = unescape_message(data, file.mbox_dialect)
+    if file.digest and sha256_bytes(data) != file.digest:
+        raise MimeParseError(
+            "mbox container changed during collection", code="MESSAGE_FAILED"
         )
     return data
 
@@ -102,7 +143,7 @@ def _process_message(
     known_hashes: set[str],
     summary: RunSummary,
 ) -> tuple[MessageRecord, list[AttachmentRecord]]:
-    data = _read_file(file, config.policy.max_message_bytes)
+    data = _message_bytes(file, config.policy.max_message_bytes)
     parsed = parse_message(
         data,
         MimeOptions(
@@ -242,6 +283,23 @@ def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> C
                             "detail": (error.detail or "")[:2000],
                         }
                     )
+
+            # Quarantined mbox regions are not messages: they are counted and
+            # reported separately so a partial import is never shown as a
+            # complete success.  The ledger row makes the gap auditable and is
+            # re-evaluated on every run until the container is fixed.
+            for segment in outcome.segments:
+                record = _segment_error(segment)
+                message_id = ledger.upsert_message(record, run_id, config.policy_fingerprint)
+                ledger.sync_attachments(message_id, [], run_id)
+                summary.mbox_segments_quarantined += 1
+                summary.errors.append(
+                    {
+                        "source_ref": segment.source_ref,
+                        "code": "MBOX_SEGMENT_QUARANTINED",
+                        "detail": segment.detail[:2000],
+                    }
+                )
 
             manifest_path = _write_manifest(config, ledger, store, run_id)
             summary.finished_at = iso_utc(clock())

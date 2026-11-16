@@ -16,6 +16,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "ATTACHMENT_DECODE_FAILED": "attachment payload could not be decoded",
     "MESSAGE_TOO_LARGE": "message exceeds the configured size limit",
     "MESSAGE_FAILED": "message processing failed",
+    "MBOX_SEGMENT_QUARANTINED": "an mbox container region could not be proven and was quarantined",
     "STORAGE_FAILED": "content-addressed storage operation failed",
     "STORAGE_UNSAFE_PATH": "object path failed the safety check",
     "STORAGE_MISMATCH": "an existing object does not match its content hash",

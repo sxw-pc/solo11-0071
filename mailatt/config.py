@@ -11,10 +11,12 @@ from typing import Any, Iterable
 import yaml
 
 from .errors import ConfigurationError
+from .mbox import MBOX_DIALECTS, MBOX_MODES
 from .util import is_within, sha256_bytes
 
 SOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 TOP_LEVEL_KEYS = {"version", "sources", "policy", "workdir"}
+SOURCE_KINDS = ("auto", "eml", "maildir", *MBOX_DIALECTS)
 
 DEFAULT_QUARANTINE_EXTENSIONS = (
     ".bat", ".cmd", ".com", ".cpl", ".dll", ".docm", ".exe", ".hta",
@@ -83,6 +85,7 @@ class SourceConfig:
     name: str
     path: Path
     kind: str
+    mbox_mode: str = "strict"
 
 
 @dataclass(frozen=True)
@@ -241,20 +244,27 @@ def load_config(path: str | Path, *, workdir_override: str | Path | None = None)
     for index, row in enumerate(source_rows):
         if not isinstance(row, dict):
             raise _fail(f"sources[{index}] must be a mapping")
-        unknown_source = sorted(set(row) - {"name", "path", "kind"})
+        unknown_source = sorted(set(row) - {"name", "path", "kind", "mbox_mode"})
         if unknown_source:
             raise _fail(f"sources[{index}] has unknown keys: {', '.join(unknown_source)}")
         name = row.get("name")
         source_path = row.get("path")
         kind = row.get("kind", "auto")
+        mbox_mode = row.get("mbox_mode", "strict")
         if not isinstance(name, str) or not SOURCE_NAME_RE.fullmatch(name):
             raise _fail(f"sources[{index}].name is invalid")
         if name in names:
             raise _fail(f"duplicate source name: {name}")
         if not isinstance(source_path, str) or not source_path.strip():
             raise _fail(f"sources[{index}].path is invalid")
-        if kind not in {"auto", "eml", "maildir"}:
-            raise _fail(f"sources[{index}].kind must be auto, eml or maildir")
+        if kind not in SOURCE_KINDS:
+            raise _fail(
+                f"sources[{index}].kind must be one of: {', '.join(SOURCE_KINDS)}"
+            )
+        if not isinstance(mbox_mode, str) or mbox_mode not in MBOX_MODES:
+            raise _fail(f"sources[{index}].mbox_mode must be one of: {', '.join(MBOX_MODES)}")
+        if "mbox_mode" in row and kind not in MBOX_DIALECTS:
+            raise _fail(f"sources[{index}].mbox_mode is only valid for mbox sources")
         declared = _declared_path(source_path, base_dir)
         if declared.is_symlink():
             raise ConfigurationError(f"source cannot be a symlink: {source_path}", code="SOURCE_UNSAFE")
@@ -266,7 +276,7 @@ def load_config(path: str | Path, *, workdir_override: str | Path | None = None)
         if not resolved.is_dir():
             raise _fail(f"source is not a directory: {source_path}")
         names.add(name)
-        sources.append(SourceConfig(name=name, path=resolved, kind=kind))
+        sources.append(SourceConfig(name=name, path=resolved, kind=kind, mbox_mode=mbox_mode))
 
     policy = _policy_from_mapping(raw.get("policy"))
     workdir_value = workdir_override if workdir_override is not None else raw.get("workdir", ".mailatt-work")

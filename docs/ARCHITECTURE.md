@@ -9,8 +9,10 @@
 ## 数据流
 
 1. `config.py` 读取 YAML，解析相对路径，校验 source / workdir 不互相嵌套。
-2. `discovery.py` 稳定排序扫描 `.eml` 树或 Maildir 的 `cur/`、`new/`，忽略符号链接，
-   计算邮件 SHA-256，并通过回调跳过摘要与策略指纹均未变的成功邮件。
+2. `discovery.py` 稳定排序扫描 `.eml` 树、Maildir 的 `cur/`、`new/` 或 mbox 容器，
+   忽略符号链接，计算邮件 SHA-256，并通过回调跳过摘要与策略指纹均未变的成功邮件。
+   mbox 容器由 `mbox.py` 按声明方言（`mboxo`/`mboxrd`/`mboxcl`/`mboxcl2`）以字节偏移
+   切分为带稳定序号的消息切片；无法证明边界的区域成为隔离段，不参与解析。
 3. `mime.py` 使用标准库 `email` 解析 MIME，遍历嵌套 `message/rfc822`，解码 RFC 2047
    文件名与主题，提取附件字节。致命边界缺陷转换为稳定 `MALFORMED_MIME` 错误。
 4. `policy.py` 按固定顺序执行路径、数量、inline、大小、扩展名、MIME、重复内容门禁，
@@ -31,6 +33,7 @@
 | 模块 | 职责 | 不负责 |
 | --- | --- | --- |
 | `discovery` | 枚举、排序、摘要、增量判定 | 解析 MIME |
+| `mbox` | 方言边界证明、字节切片、转义还原 | 对象与台账写入 |
 | `mime` | 解析与附件候选 | 策略决策 |
 | `policy` | 纯函数式门禁 | 磁盘写入 |
 | `storage` | 对象字节与路径安全 | 台账事务 |
@@ -73,6 +76,9 @@ candidate -> accepted    -> objects/<prefix>/<sha>
 ## 失败隔离与安全
 
 单封坏邮件只产生一条 `messages.status='error'` 记录，并清空该消息的附件记录；不会中断
-后续邮件。对象路径只接受规范格式 `objects|quarantine/<2 hex>/<64 hex>`，拒绝符号链接
-和越界路径。报告与 Web 模板自动转义不可信邮件头、文件名和错误文本。只读数据库连接
-使用 SQLite `mode=ro`，Web 不提供任何写方法。
+后续邮件。mbox 容器中无法证明边界的区域以 `MBOX_SEGMENT_QUARANTINED` 错误行计入台账
+与运行摘要（`mbox_segments_quarantined`），部分导入的运行状态始终为
+`completed_with_errors`，不会显示为完整成功。对象路径只接受规范格式
+`objects|quarantine/<2 hex>/<64 hex>`，拒绝符号链接和越界路径。报告与 Web 模板自动
+转义不可信邮件头、文件名和错误文本。只读数据库连接使用 SQLite `mode=ro`，Web 不提供
+任何写方法。

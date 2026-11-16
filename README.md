@@ -1,9 +1,9 @@
 # 邮件附采台 (mailatt)
 
 一个**纯本地、完全离线、可复现**的邮件附件采集与归档工具。它扫描本地导出的 `.eml`
-文件或 Maildir 目录，解析 MIME，按声明式策略筛选附件，以 SHA-256 内容寻址保存对象，
-写入 SQLite 台账，生成 JSON / Markdown / 自包含 HTML 审计报告，并提供仅监听
-`127.0.0.1` 的只读复核台。
+文件、Maildir 目录或 mbox 容器，解析 MIME，按声明式策略筛选附件，以 SHA-256 内容
+寻址保存对象，写入 SQLite 台账，生成 JSON / Markdown / 自包含 HTML 审计报告，并
+提供仅监听 `127.0.0.1` 的只读复核台。
 
 仓库中的全部邮件、地址、域名和附件都是合成 fixture。示例域名统一为
 `demo.invalid`，不含真实邮件、凭据或可执行附件。
@@ -38,10 +38,11 @@ python -m mailatt serve --workdir .mailatt-demo
 ## 处理流程
 
 ```text
-本地 .eml / Maildir
+本地 .eml / Maildir / mbox 容器
         |
         v
 稳定排序发现 -> 计算邮件哈希 -> 增量跳过
+（mbox 按字节偏移切分为带序号的消息切片，歧义区记为隔离段）
         |
         v
 MIME 解析（嵌套邮件、RFC 2047、损坏降级）
@@ -91,8 +92,11 @@ policy:
   skip_duplicate_content: true
 ```
 
-完整示例见 `fixtures/policy/demo.yaml`。`kind` 可取 `auto`、`eml`、`maildir`。
-`auto` 在存在 `cur/` 或 `new/` 时按 Maildir 处理。数据流与模块边界见
+完整示例见 `fixtures/policy/demo.yaml`。`kind` 可取 `auto`、`eml`、`maildir`、
+`mboxo`、`mboxrd`、`mboxcl`、`mboxcl2`。`auto` 在存在 `cur/` 或 `new/` 时按
+Maildir 处理，不会猜测 mbox；四种 mbox 方言必须显式声明，可配 `mbox_mode`
+（`strict` 默认 / `recover`）控制歧义边界行为。mbox 方言选择、字节偏移切片与
+隔离段语义见 `docs/MBOX.md`。数据流与模块边界见
 `docs/ARCHITECTURE.md`，门禁顺序见 `docs/POLICY.md`。
 
 ## 命令

@@ -40,6 +40,11 @@ def _print_collection(result: object) -> None:
         )
     )
     print(f"新增对象：{summary.objects_created}")
+    if summary.mbox_segments_quarantined:
+        print(
+            f"mbox 隔离段：{summary.mbox_segments_quarantined}"
+            "（容器覆盖不完整，详见失败隔离）"
+        )
     print(f"清单：{result.manifest_path}")
     for kind in ("json", "markdown", "html"):
         print(f"报告 {kind}: {result.report_paths[kind]}")
