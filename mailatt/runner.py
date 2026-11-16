@@ -9,7 +9,7 @@ from typing import Callable
 
 from .config import Config
 from .discovery import discover
-from .errors import MimeParseError, StorageError, normalize_error
+from .errors import MimeParseError, normalize_error
 from .ledger import Ledger
 from .mime import MimeOptions, parse_message
 from .models import (
@@ -25,9 +25,16 @@ from .models import (
     StorageKind,
 )
 from .policy import assess_candidates
-from .report import generate_reports
+from .publish import (
+    ARTIFACT_MANIFEST,
+    ARTIFACT_REPORT_HTML,
+    ARTIFACT_REPORT_JSON,
+    ARTIFACT_REPORT_MARKDOWN,
+    Publisher,
+)
+from .report import build_report_bundle
 from .storage import ObjectStore
-from .util import atomic_write_json, iso_utc, utc_now
+from .util import iso_utc, utc_now
 
 Clock = Callable[[], datetime]
 
@@ -181,20 +188,16 @@ def _manifest_entries(ledger: Ledger, store: ObjectStore) -> list[ObjectManifest
     return sorted(by_path.values(), key=lambda item: (item.status, item.path))
 
 
-def _write_manifest(config: Config, ledger: Ledger, store: ObjectStore, run_id: str) -> Path:
+def _manifest_payload(
+    ledger: Ledger, store: ObjectStore, run_id: str
+) -> dict[str, object]:
     entries = _manifest_entries(ledger, store)
-    payload = {
+    return {
         "schema_version": "1.0",
         "run_id": run_id,
         "object_count": len(entries),
         "objects": [entry.as_dict() for entry in entries],
     }
-    path = config.workdir / "manifest.json"
-    try:
-        atomic_write_json(path, payload)
-    except OSError as exc:
-        raise StorageError(f"cannot write manifest: {exc}") from exc
-    return path
 
 
 def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> CollectionResult:
@@ -243,11 +246,20 @@ def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> C
                         }
                     )
 
-            manifest_path = _write_manifest(config, ledger, store, run_id)
+            manifest = _manifest_payload(ledger, store, run_id)
             summary.finished_at = iso_utc(clock())
             summary.status = "completed_with_errors" if summary.errors else "completed"
+            # The run is recorded as completed in the ledger before any
+            # publication artifact becomes visible on disk.
             ledger.finish_run(summary)
-            report_paths = generate_reports(config, ledger, clock)
+            bundle = build_report_bundle(config, ledger, manifest, run_id, clock)
+            published = Publisher(config.workdir, config.publish_contract).publish(bundle)
+            manifest_path = published[ARTIFACT_MANIFEST]
+            report_paths = {
+                "json": published[ARTIFACT_REPORT_JSON],
+                "markdown": published[ARTIFACT_REPORT_MARKDOWN],
+                "html": published[ARTIFACT_REPORT_HTML],
+            }
             return CollectionResult(summary, manifest_path, report_paths)
         except Exception:
             if summary.status == "running":

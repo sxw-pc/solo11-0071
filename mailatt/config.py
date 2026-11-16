@@ -14,7 +14,8 @@ from .errors import ConfigurationError
 from .util import is_within, sha256_bytes
 
 SOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-TOP_LEVEL_KEYS = {"version", "sources", "policy", "workdir"}
+TOP_LEVEL_KEYS = {"version", "sources", "policy", "workdir", "publish_contract"}
+PUBLISH_CONTRACTS = ("progressive", "atomic")
 
 DEFAULT_QUARANTINE_EXTENSIONS = (
     ".bat", ".cmd", ".com", ".cpl", ".dll", ".docm", ".exe", ".hta",
@@ -91,6 +92,7 @@ class Config:
     policy: PolicyConfig
     workdir: Path
     config_path: Path | None = None
+    publish_contract: str = "atomic"
 
     @property
     def policy_fingerprint(self) -> str:
@@ -272,6 +274,9 @@ def load_config(path: str | Path, *, workdir_override: str | Path | None = None)
     workdir_value = workdir_override if workdir_override is not None else raw.get("workdir", ".mailatt-work")
     if not isinstance(workdir_value, (str, Path)):
         raise _fail("workdir must be a path string")
+    contract = raw.get("publish_contract", "atomic")
+    if not isinstance(contract, str) or contract not in PUBLISH_CONTRACTS:
+        raise _fail("publish_contract must be 'progressive' or 'atomic'")
     workdir_base = Path.cwd() if workdir_override is not None else base_dir
     declared_workdir = _declared_path(workdir_value, workdir_base)
     if declared_workdir.is_symlink():
@@ -283,6 +288,7 @@ def load_config(path: str | Path, *, workdir_override: str | Path | None = None)
         policy=policy,
         workdir=workdir,
         config_path=config_path,
+        publish_contract=contract,
     )
 
 

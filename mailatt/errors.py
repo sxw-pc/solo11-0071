@@ -23,6 +23,8 @@ ERROR_MESSAGES: dict[str, str] = {
     "LEDGER_NOT_FOUND": "ledger database was not found",
     "VERIFY_FAILED": "archive verification failed",
     "WEB_NOT_READY": "work directory is not ready for inspection",
+    "PUBLICATION_FAILED": "audit artifact publication failed",
+    "PUBLICATION_NOT_DELIVERABLE": "no complete same-generation artifact set is deliverable",
     "INVALID_ARGUMENT": "command-line argument is invalid",
 }
 
@@ -68,6 +70,25 @@ class LedgerError(MailattError):
 
 class VerificationError(MailattError):
     code = "VERIFY_FAILED"
+
+
+class PublicationError(MailattError):
+    """Raised when a publication write/switch cannot be completed."""
+
+    code = "PUBLICATION_FAILED"
+
+    def __init__(self, detail: str = "", *, code: str | None = None) -> None:
+        super().__init__(detail, code=code)
+
+
+class PublicationNotDeliverable(PublicationError):
+    """Raised by readers when no same-generation four-piece set is complete."""
+
+    code = "PUBLICATION_NOT_DELIVERABLE"
+
+    def __init__(self, detail: str, issues: list[dict[str, str]]) -> None:
+        super().__init__(detail, code=self.code)
+        self.issues = issues
 
 
 def normalize_error(exc: BaseException) -> MailattError:

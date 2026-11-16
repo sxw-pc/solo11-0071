@@ -115,6 +115,38 @@ policy: {{}}
         load_config(path, workdir_override=tmp_path / "work")
 
 
+def test_publish_contract_defaults_to_atomic(demo_config) -> None:
+    assert demo_config.publish_contract == "atomic"
+
+
+def test_publish_contract_can_be_selected(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path / "progressive.yaml",
+        f"""version: 1
+sources:
+  - name: demo
+    path: {FIXTURES / "eml"}
+publish_contract: progressive
+""",
+    )
+    config = load_config(path, workdir_override=tmp_path / "work")
+    assert config.publish_contract == "progressive"
+
+
+def test_invalid_publish_contract_rejected(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path / "bad-contract.yaml",
+        f"""version: 1
+sources:
+  - name: demo
+    path: {FIXTURES / "eml"}
+publish_contract: blue-green
+""",
+    )
+    with pytest.raises(ConfigurationError, match="publish_contract"):
+        load_config(path, workdir_override=tmp_path / "work")
+
+
 def test_policy_fingerprint_changes_with_policy(tmp_path: Path) -> None:
     first = write_config(
         tmp_path / "a.yaml",

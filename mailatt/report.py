@@ -11,20 +11,10 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .config import Config
 from .ledger import Ledger
-from .util import atomic_write_json, atomic_write_text, iso_utc, read_json, utc_now
+from .publish import ArtifactBundle
+from .util import iso_utc, utc_now
 
 REPORT_SCHEMA = "1.0"
-
-
-def _safe_manifest(config: Config) -> dict[str, Any]:
-    path = config.workdir / "manifest.json"
-    if not path.is_file():
-        return {"objects": [], "object_count": 0, "run_id": ""}
-    try:
-        payload = read_json(path)
-    except (OSError, json.JSONDecodeError, UnicodeError):
-        return {"objects": [], "object_count": 0, "run_id": ""}
-    return payload if isinstance(payload, dict) else {"objects": [], "object_count": 0, "run_id": ""}
 
 
 def _parse_warnings(value: str) -> list[str]:
@@ -35,12 +25,16 @@ def _parse_warnings(value: str) -> list[str]:
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
 
-def build_payload(config: Config, ledger: Ledger, generated_at: str) -> dict[str, Any]:
+def build_payload(
+    config: Config,
+    ledger: Ledger,
+    generated_at: str,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
     messages = ledger.all_messages()
     attachments = ledger.all_attachments()
     errors = ledger.errors()
     last_run = ledger.last_run() or {}
-    manifest = _safe_manifest(config)
 
     for message in messages:
         message["warnings"] = _parse_warnings(str(message.get("warnings_json", "[]")))
@@ -176,7 +170,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _environment(config: Config) -> Environment:
+def _environment(config: Config | None = None) -> Environment:
     return Environment(
         loader=FileSystemLoader(str(Path(__file__).parent / "templates")),
         autoescape=select_autoescape(enabled_extensions=("html",)),
@@ -185,23 +179,22 @@ def _environment(config: Config) -> Environment:
     )
 
 
-def generate_reports(
+def build_report_bundle(
     config: Config,
     ledger: Ledger,
+    manifest_payload: dict[str, Any],
+    run_id: str,
     clock: Callable[[], datetime] = utc_now,
-) -> dict[str, Path]:
+) -> ArtifactBundle:
+    """Build the in-memory, unstamped four-piece artifact bundle for one run."""
     generated_at = iso_utc(clock())
-    payload = build_payload(config, ledger, generated_at)
-    reports = config.workdir / "reports"
-    reports.mkdir(parents=True, exist_ok=True)
-    paths = {
-        "json": reports / "report.json",
-        "markdown": reports / "report.md",
-        "html": reports / "report.html",
-    }
-    atomic_write_json(paths["json"], payload)
-    atomic_write_text(paths["markdown"], render_markdown(payload))
-    template = _environment(config).get_template("report.html")
-    rendered = template.render(report=payload)
-    atomic_write_text(paths["html"], rendered)
-    return paths
+    payload = build_payload(config, ledger, generated_at, manifest_payload)
+    markdown = render_markdown(payload)
+    rendered = _environment().get_template("report.html").render(report=payload)
+    return ArtifactBundle(
+        run_id=run_id,
+        manifest_payload=manifest_payload,
+        report_payload=payload,
+        report_markdown=markdown,
+        report_html=rendered,
+    )

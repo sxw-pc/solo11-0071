@@ -55,8 +55,18 @@ MIME 解析（嵌套邮件、RFC 2047、损坏降级）
         +--> duplicate   -> 复用已有内容寻址对象
         |
         v
-SQLite 台账 -> manifest.json -> reports/report.{json,md,html}
+SQLite 台账（run 记为 completed）
+        |
+        v
+代次发布 generations/<gen>/ 四件套 -> 原子切换 current.json -> 旧静态路径
 ```
+
+四件套指 `manifest.json` 与 `reports/report.{json,md,html}`，每个产物都带相同的
+`generation` / `run_id` 标记。发布支持两种契约（`publish_contract`，默认
+`atomic`）：`atomic` 先写独立代目录并核验摘要再一次切换指针，任一写入失败时读取者仍只
+看到上一完整代次；`progressive` 允许逐文件提前替换，但读取者检测到四件套代次不一致或缺件
+时会判定本轮不完整，不会把不同运行代次拼成一份报告。旧静态路径仍可用，但只能整体解析到
+指针指向的唯一代次，不支持逐文件回退。
 
 原始附件名只作为台账与报告元数据展示，不参与对象磁盘路径。对象写入使用同目录临时
 文件加原子替换，附件字节不包含任何原始路径穿越能力。
@@ -89,11 +99,14 @@ policy:
   allow_inline_attachments: true
   reject_path_traversal: true
   skip_duplicate_content: true
+# 可选：progressive（逐文件可见）或 atomic（默认，整代切换）
+publish_contract: atomic
 ```
 
 完整示例见 `fixtures/policy/demo.yaml`。`kind` 可取 `auto`、`eml`、`maildir`。
-`auto` 在存在 `cur/` 或 `new/` 时按 Maildir 处理。数据流与模块边界见
-`docs/ARCHITECTURE.md`，门禁顺序见 `docs/POLICY.md`。
+`auto` 在存在 `cur/` 或 `new/` 时按 Maildir 处理。`publish_contract` 可取
+`progressive` 或 `atomic`。数据流与模块边界见 `docs/ARCHITECTURE.md`，门禁顺序见
+`docs/POLICY.md`。
 
 ## 命令
 
