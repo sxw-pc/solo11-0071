@@ -1,0 +1,32 @@
+version: 1
+sources:
+  - name: signed
+    path: ../signed/mail
+    kind: eml
+trust:
+  anchors:
+    - name: demo-root
+      certificate: ../signed/certs/demo-root.pem
+policy:
+  allowed_extensions:
+    - .txt
+    - .csv
+    - .pdf
+  allowed_media_types:
+    - text/plain
+    - text/csv
+    - application/pdf
+  quarantine_extensions:
+    - .exe
+  blocked_extensions:
+    - .lnk
+  max_file_bytes: 8192
+  min_file_bytes: 0
+  max_attachments_per_message: 6
+  max_nested_depth: 3
+  max_message_bytes: 262144
+  max_filename_length: 120
+  allow_nested_messages: true
+  allow_inline_attachments: true
+  reject_path_traversal: true
+  skip_duplicate_content: true

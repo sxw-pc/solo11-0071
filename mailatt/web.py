@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from .storage import ObjectStore
 
 LOOPBACK_HOST = "127.0.0.1"
 SAMPLE_LIMIT = 300
+TRUSTED_ATTACHMENT_STATUSES = ("accepted", "duplicate")
 
 
 def _summary(ledger: Ledger) -> dict[str, Any]:
@@ -21,16 +23,53 @@ def _summary(ledger: Ledger) -> dict[str, Any]:
     statuses = {key: 0 for key in ("accepted", "quarantined", "rejected", "duplicate")}
     for item in attachments:
         statuses[item["status"]] = statuses.get(item["status"], 0) + 1
+    verdicts = {
+        key: 0
+        for key in (
+            "trusted",
+            "integrity_valid_but_untrusted",
+            "valid",
+            "invalid",
+            "unverifiable",
+            "not_signed",
+        )
+    }
+    for item in messages:
+        verdict = item.get("signature_verdict") or item.get("signature_integrity") or "not_signed"
+        verdicts[verdict] = verdicts.get(verdict, 0) + 1
+    attachment_signatures = {
+        key: 0 for key in ("none", "untrusted_signer", "unverifiable", "signature_invalid")
+    }
+    for item in attachments:
+        key = item.get("signature_status") or "none"
+        attachment_signatures[key] = attachment_signatures.get(key, 0) + 1
     last_run = ledger.last_run() or {}
     return {
         "messages_total": len(messages),
         "messages_error": sum(item["status"] == "error" for item in messages),
         "attachments_total": len(attachments),
         "by_status": statuses,
+        "signature_verdicts": verdicts,
+        "attachment_signatures": attachment_signatures,
         "last_run_id": last_run.get("run_id", ""),
         "last_run_status": last_run.get("status", ""),
         "last_run_finished_at": last_run.get("finished_at", ""),
     }
+
+
+def _signer(message: dict[str, Any]) -> dict[str, Any]:
+    try:
+        signer = json.loads(str(message.get("signature_signer_json") or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return signer if isinstance(signer, dict) else {}
+
+
+def _attach_signature(message: dict[str, Any]) -> None:
+    message["signer"] = _signer(message)
+    message["signature_verdict"] = (
+        message.get("signature_verdict") or message.get("signature_integrity") or "not_signed"
+    )
 
 
 def create_app(workdir: Path | str) -> Flask:
@@ -66,6 +105,7 @@ def create_app(workdir: Path | str) -> Flask:
                 counts[row["message_id"]] = counts.get(row["message_id"], 0) + 1
             for row in messages:
                 row["attachment_count"] = counts.get(row["id"], 0)
+                _attach_signature(row)
         return render_template(
             "inspect.html", view="index", summary=summary,
             messages=messages, attachments=attachments,
@@ -78,6 +118,7 @@ def create_app(workdir: Path | str) -> Flask:
             message = ledger.get_message(message_id)
             if message is None:
                 abort(404)
+            _attach_signature(message)
             attachments = ledger.attachments_for_message(message_id)
             summary = _summary(ledger)
         return render_template(
@@ -91,6 +132,18 @@ def create_app(workdir: Path | str) -> Flask:
             attachment = ledger.get_attachment(attachment_id)
             if attachment is None:
                 abort(404)
+            message = ledger.get_message(attachment["message_id"])
+            # Show the message-level verdict next to the attachment so an
+            # accepted status is never read as "sender authenticated".
+            attachment["message_signature_integrity"] = (
+                message.get("signature_integrity") if message else "not_signed"
+            )
+            attachment["message_signature_trust"] = (
+                message.get("signature_trust") if message else "not_applicable"
+            )
+            attachment["message_signature_verdict"] = (
+                message.get("signature_verdict") if message else "not_signed"
+            )
             summary = _summary(ledger)
         return render_template(
             "inspect.html", view="attachment", summary=summary, messages=[], attachments=[],
@@ -101,7 +154,22 @@ def create_app(workdir: Path | str) -> Flask:
     def download(attachment_id: int) -> Any:
         with open_ledger() as ledger:
             attachment = ledger.get_attachment(attachment_id)
-        if attachment is None or attachment["status"] not in ("accepted", "duplicate"):
+            message = (
+                ledger.get_message(attachment["message_id"]) if attachment is not None else None
+            )
+            if attachment is not None:
+                attachment["message_signature_integrity"] = (
+                    message.get("signature_integrity") if message else "not_signed"
+                )
+                attachment["message_signature_verdict"] = (
+                    message.get("signature_verdict") if message else "not_signed"
+                )
+        if attachment is None or attachment["status"] not in TRUSTED_ATTACHMENT_STATUSES:
+            abort(404)
+        # A download must never disguise an invalid signature as a trusted file.
+        # Invalid-signature attachments stay undownloadable; untrusted-but-valid
+        # files are served with an explicit warning header.
+        if attachment.get("message_signature_integrity") == "invalid":
             abort(404)
         relative = attachment["object_path"]
         if not relative:
@@ -111,13 +179,20 @@ def create_app(workdir: Path | str) -> Flask:
             target = store.resolve_file(relative)
         except MailattError:
             abort(404)
-        return send_file(
+        response = send_file(
             target,
             mimetype=attachment["media_type"] or "application/octet-stream",
             as_attachment=True,
             download_name=attachment["safe_filename"] or "attachment.bin",
             max_age=0,
         )
+        response.headers["X-Mailatt-Signature-Integrity"] = str(
+            attachment.get("message_signature_integrity") or "not_signed"
+        )
+        response.headers["X-Mailatt-Signature-Verdict"] = str(
+            attachment.get("message_signature_verdict") or "not_signed"
+        )
+        return response
 
     @app.get("/api/summary")
     def api_summary() -> Any:
@@ -132,11 +207,38 @@ def create_app(workdir: Path | str) -> Flask:
         fields = (
             "id", "message_source", "message_path", "part_id", "sha256", "size",
             "safe_filename", "media_type", "status", "reason_code", "object_path",
-            "quarantine_path",
+            "quarantine_path", "signature_status", "signature_reason_code",
         )
         return jsonify({"count": len(rows), "attachments": [
             {key: row.get(key, "") for key in fields} for row in rows
         ]})
+
+    @app.get("/api/messages/<int:message_id>/signature")
+    def api_message_signature(message_id: int) -> Any:
+        with open_ledger() as ledger:
+            message = ledger.get_message(message_id)
+        if message is None:
+            abort(404)
+        _attach_signature(message)
+        signer = message["signer"]
+        return jsonify(
+            {
+                "message_id": message["id"],
+                "source": f"{message['source_name']}/{message['relative_path']}",
+                "source_digest": message["digest"],
+                "integrity": message.get("signature_integrity"),
+                "trust": message.get("signature_trust"),
+                "verdict": message["signature_verdict"],
+                "reason_code": message.get("signature_reason_code"),
+                "reason": message.get("signature_reason"),
+                "signed_content_sha256": message.get("signature_signed_digest"),
+                "signature_blob_sha256": message.get("signature_blob_sha256"),
+                "anchor_fingerprint": message.get("signature_anchor_fingerprint"),
+                "evidence_hash": message.get("evidence_hash"),
+                "signer": signer,
+                "trusted_identity": message["signature_verdict"] == "trusted",
+            }
+        )
 
     return app
 

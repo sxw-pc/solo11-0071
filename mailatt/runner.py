@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from .ledger import Ledger
 from .mime import MimeOptions, parse_message
 from .models import (
     AttachmentCandidate,
+    AttachmentFinding,
     AttachmentRecord,
     Decision,
     DiscoveredFile,
@@ -22,14 +24,21 @@ from .models import (
     ObjectManifestEntry,
     PolicyDecision,
     RunSummary,
+    SignatureEvidence,
+    SignatureIntegrity,
+    SignatureTrust,
     StorageKind,
 )
 from .policy import assess_candidates
 from .report import generate_reports
 from .storage import ObjectStore
-from .util import atomic_write_json, iso_utc, utc_now
+from .util import atomic_write_json, iso_utc, sha256_bytes, utc_now
 
 Clock = Callable[[], datetime]
+
+# Reasons an attachment's review status is downgraded by message authenticity.
+SIGNATURE_INVALID_CODE = "message_signature_invalid"
+SIGNATURE_UNTRUSTED_CODE = "message_signature_untrusted"
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,7 @@ def _message_error(file: DiscoveredFile, exc: BaseException) -> MessageRecord:
 
 
 def _read_file(file: DiscoveredFile, max_bytes: int) -> bytes:
+    """Read one authoritative byte snapshot used for parse and signature."""
     if file.size > max_bytes:
         raise MimeParseError(
             f"message size {file.size} exceeds {max_bytes}", code="MESSAGE_TOO_LARGE"
@@ -72,12 +82,59 @@ def _read_file(file: DiscoveredFile, max_bytes: int) -> bytes:
     return data
 
 
+def _evidence_hash(data: bytes, evidence: SignatureEvidence | None) -> str:
+    """Bind signature state and certificate fingerprints to the source bytes."""
+    payload = {
+        "source_digest": sha256_bytes(data),
+        "signature": evidence.as_dict() if evidence is not None else None,
+    }
+    return sha256_bytes(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    )
+
+
+def _finding(candidate: AttachmentCandidate, evidence: SignatureEvidence | None) -> AttachmentFinding:
+    if evidence is None or evidence.integrity in (
+        SignatureIntegrity.NOT_SIGNED,
+        SignatureIntegrity.VALID,
+    ):
+        if evidence is not None and evidence.integrity is SignatureIntegrity.VALID:
+            if evidence.trust is not SignatureTrust.TRUSTED:
+                return AttachmentFinding(
+                    part_id=candidate.part_id,
+                    status="untrusted_signer",
+                    reason_code=SIGNATURE_UNTRUSTED_CODE,
+                    detail="signature is valid but the signer is not a local trust anchor",
+                )
+        return AttachmentFinding(
+            part_id=candidate.part_id,
+            status="none",
+            reason_code="",
+            detail="",
+        )
+    if evidence.integrity is SignatureIntegrity.INVALID:
+        return AttachmentFinding(
+            part_id=candidate.part_id,
+            status="signature_invalid",
+            reason_code=SIGNATURE_INVALID_CODE,
+            detail="attachment came from a message whose signature does not cover its bytes",
+        )
+    return AttachmentFinding(
+        part_id=candidate.part_id,
+        status="unverifiable",
+        reason_code="message_signature_unverifiable",
+        detail="attachment came from a message whose signature could not be verified",
+    )
+
+
 def _attachment_record(
     candidate: AttachmentCandidate,
     decision: PolicyDecision,
     object_path: str,
     quarantine_path: str,
+    finding: AttachmentFinding | None = None,
 ) -> AttachmentRecord:
+    finding = finding or AttachmentFinding(candidate.part_id, "none", "", "")
     return AttachmentRecord(
         part_id=candidate.part_id,
         sha256=candidate.sha256,
@@ -92,7 +149,31 @@ def _attachment_record(
         reason=decision.reason,
         object_path=object_path,
         quarantine_path=quarantine_path,
+        signature_status=finding.status,
+        signature_reason_code=finding.reason_code,
+        signature_detail=finding.detail,
     )
+
+
+def _authenticity_override(
+    decision: PolicyDecision, evidence: SignatureEvidence | None
+) -> PolicyDecision:
+    """Never let an invalid signature end up as a trusted accepted object.
+
+    Evidence bytes are still preserved for audit, but they go to quarantine
+    under an explicit reason so reports and downloads cannot read them as
+    authenticated content.  Unverifiable signatures keep the policy decision
+    and are surfaced separately; only a proven mismatch forces quarantine.
+    """
+    if evidence is None or evidence.integrity is not SignatureIntegrity.INVALID:
+        return decision
+    if decision.status in (Decision.ACCEPTED, Decision.DUPLICATE):
+        return PolicyDecision(
+            Decision.QUARANTINED,
+            SIGNATURE_INVALID_CODE,
+            "attachments from a message with an invalid signature are quarantined",
+        )
+    return decision
 
 
 def _process_message(
@@ -101,19 +182,42 @@ def _process_message(
     store: ObjectStore,
     known_hashes: set[str],
     summary: RunSummary,
+    *,
+    clock: Clock = utc_now,
 ) -> tuple[MessageRecord, list[AttachmentRecord]]:
+    # One authoritative snapshot: parsing, signature verification and the
+    # evidence hash all consume these same bytes.
     data = _read_file(file, config.policy.max_message_bytes)
+    # Bind the record to the bytes actually verified, not to an earlier
+    # discovery-time digest that the file may have raced past.
+    snapshot_digest = sha256_bytes(data)
     parsed = parse_message(
         data,
         MimeOptions(
             allow_nested_messages=config.policy.allow_nested_messages,
             max_nested_depth=config.policy.max_nested_depth,
             max_filename_length=config.policy.max_filename_length,
+            trust=config.trust,
+            signature_time=clock(),
         ),
     )
+    evidence = parsed.signature
+    evidence_hash = _evidence_hash(data, evidence)
+    if evidence is not None:
+        summary.signature_verdicts[evidence.verdict] = (
+            summary.signature_verdicts.get(evidence.verdict, 0) + 1
+        )
     decisions = assess_candidates(parsed.candidates, config.policy, known_hashes)
     records: list[AttachmentRecord] = []
+    findings: list[AttachmentFinding] = []
     for candidate, decision in zip(parsed.candidates, decisions):
+        finding = _finding(candidate, evidence)
+        findings.append(finding)
+        overridden = _authenticity_override(decision, evidence)
+        if overridden is not decision and decision.status == Decision.ACCEPTED:
+            # assess_candidates registered this digest as archived; it is not.
+            known_hashes.discard(candidate.sha256)
+        decision = overridden
         object_path = ""
         quarantine_path = ""
         if decision.status == Decision.ACCEPTED:
@@ -137,7 +241,9 @@ def _process_message(
                     "accepted_after_missing_object",
                     "duplicate reference was missing; object was restored",
                 )
-        records.append(_attachment_record(candidate, decision, object_path, quarantine_path))
+        records.append(
+            _attachment_record(candidate, decision, object_path, quarantine_path, finding)
+        )
     summary.attachments_seen += len(records)
     summary.accepted += sum(item.status == Decision.ACCEPTED for item in records)
     summary.quarantined += sum(item.status == Decision.QUARANTINED for item in records)
@@ -146,14 +252,17 @@ def _process_message(
     message = MessageRecord(
         source_name=file.source_name,
         relative_path=file.relative_path,
-        digest=file.digest,
-        size=file.size,
+        digest=snapshot_digest,
+        size=len(data),
         message_id=parsed.message_id,
         subject=parsed.subject,
         sender=parsed.sender,
         sent_at=parsed.sent_at,
         status=MessageStatus.OK,
         warnings=parsed.warnings,
+        signature=evidence,
+        evidence_hash=evidence_hash,
+        attachment_findings=tuple(findings),
     )
     return message, records
 
@@ -210,12 +319,19 @@ def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> C
                 if force or not file.digest:
                     return False
                 state = ledger.message_state(file.source_name, file.relative_path)
-                return bool(
-                    state
-                    and state["status"] == MessageStatus.OK.value
-                    and state["digest"] == file.digest
-                    and state["policy_hash"] == config.policy_fingerprint
-                )
+                if not state:
+                    return False
+                if state["status"] != MessageStatus.OK.value:
+                    return False
+                if state["digest"] != file.digest:
+                    return False
+                if state["policy_hash"] != config.policy_fingerprint:
+                    return False
+                # Trust-anchor changes alter the verdict without changing the
+                # source bytes, so re-verification is keyed on both hashes.
+                if state.get("evidence_config_hash") != config.evidence_fingerprint:
+                    return False
+                return bool(state.get("evidence_hash"))
 
             outcome = discover(config, is_unchanged=unchanged)
             summary.messages_seen = len(outcome.files) + outcome.skipped_count
@@ -225,14 +341,22 @@ def collect(config: Config, *, clock: Clock = utc_now, force: bool = False) -> C
 
             for file in outcome.files:
                 try:
-                    message, records = _process_message(file, config, store, known_hashes, summary)
-                    message_id = ledger.upsert_message(message, run_id, config.policy_fingerprint)
+                    message, records = _process_message(
+                        file, config, store, known_hashes, summary, clock=clock
+                    )
+                    message_id = ledger.upsert_message(
+                        message, run_id, config.policy_fingerprint,
+                        evidence_config_hash=config.evidence_fingerprint,
+                    )
                     ledger.sync_attachments(message_id, records, run_id)
                     summary.messages_ok += 1
                 except Exception as exc:
                     error = normalize_error(exc)
                     failed = _message_error(file, exc)
-                    message_id = ledger.upsert_message(failed, run_id, config.policy_fingerprint)
+                    message_id = ledger.upsert_message(
+                        failed, run_id, config.policy_fingerprint,
+                        evidence_config_hash=config.evidence_fingerprint,
+                    )
                     ledger.sync_attachments(message_id, [], run_id)
                     summary.messages_error += 1
                     summary.errors.append(

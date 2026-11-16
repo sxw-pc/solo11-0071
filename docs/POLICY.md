@@ -23,6 +23,10 @@
 10. **允许 MIME**：不在 `allowed_media_types` 中时拒绝。支持 `image/*` 通配。
 11. **重复内容**：`skip_duplicate_content=true` 且摘要已存在于已归档集合时，
     判定为 `duplicate / duplicate_content`，复用已有对象。
+12. **来源认证覆盖**：若邮件 `multipart/signed` 签名被证明为 `invalid`，本应为
+    `accepted` 或 `duplicate` 的附件改为 `quarantined / message_signature_invalid`。
+    签名 `unverifiable` 或有效但 `untrusted` 不改变策略判定，但会记录
+    `attachments.signature_status` 供报告和页面展示。该覆盖只能收紧，不能放宽。
 
 ## 判定结果
 
@@ -48,8 +52,25 @@ Windows 非法字符、目录部分、尾随点与空格，并处理 Windows 保
 在不同邮件、不同文件名下只保留一个对象。隔离内容不参与归档去重；但重复隔离内容会复用
 同一内容寻址隔离文件。
 
-## fixture 策略
+## 签名证据策略
 
+签名完整性是事实，信任是本地决定，二者分开记录：
+
+| 完整性 | 信任 | 结论 | 附件处理 |
+| --- | --- | --- | --- |
+| `valid` | `trusted` | `trusted` | 按策略 |
+| `valid` | `untrusted` | `integrity_valid_but_untrusted` | 按策略，页面/下载标注未受信 |
+| `invalid` | `not_applicable` | `invalid` | 强制隔离，不可下载 |
+| `unverifiable` | `not_applicable` | `unverifiable` | 按策略，页面标注未验证 |
+| `not_signed` | `not_applicable` | `not_signed` | 按策略 |
+
+信任只能来自 `trust.anchors` 中显式配置的证书。工具不联网取证书、CRL、OCSP 或时间戳，
+也不接受私钥文件作为锚。`fixtures/policy/signed.yaml` 演示一个本地根证书：
+`0001.trusted.eml` 由该锚签发，`0002.self-signed.eml` 使用自签证书，两者签名字节相同，
+但只有前者是 `trusted`；`0003.tampered.eml` 的字节被改动，必须变为 `invalid`；
+`0004.missing-material.eml` 缺少签名材料，必须是 `unverifiable`。
+
+## fixture 策略
 `fixtures/policy/demo.yaml` 设置 8 KiB 附件上限、每封 6 个附件、隔离可执行类扩展名、
 拒绝路径穿越、开启重复内容去重。演示包同时包含：
 
@@ -66,3 +87,8 @@ Windows 非法字符、目录部分、尾随点与空格，并处理 Windows 保
 
 这不是病毒扫描器。隔离只依据文件名策略与门禁结果，不检查文件真实格式、宏、漏洞或
 恶意载荷。不要执行隔离区对象，也不要将真实恶意样本放入仓库或演示目录。
+
+签名验证也不是身份认证服务：`valid` 只证明签名覆盖当前字节，`trusted` 只表示签发证书
+链到本机配置的锚。工具不判断邮件头 `From` 是否等于证书主体，也不查询撤销状态。不要把
+`integrity_valid_but_untrusted` 解读为垃圾邮件或伪造，它只表示“签名有效，但本机没有
+认可签发者的锚”。

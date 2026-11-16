@@ -148,6 +148,44 @@ def _check_manifest(
         issues.add("MANIFEST_OMISSION", path, "ledger object is absent from manifest")
 
 
+def _check_signature_evidence(ledger: Ledger, issues: _Issues) -> None:
+    """Cross-check signature verdicts against attachment placement.
+
+    The archive must never contain an attachment that is presented as trusted
+    while its message signature is invalid, nor a "trusted" claim without an
+    anchor fingerprint.
+    """
+    rows = ledger.signature_rows()
+    verdicts = {f"{row['source_name']}/{row['relative_path']}": row for row in rows}
+    for source, row in verdicts.items():
+        if row["signature_verdict"] == "trusted" and not row["signature_anchor_fingerprint"]:
+            issues.add(
+                "SIGNATURE_TRUST_WITHOUT_ANCHOR", source,
+                "message is marked trusted but records no local anchor fingerprint",
+            )
+        if row["signature_integrity"] == "invalid" and row["signature_trust"] == "trusted":
+            issues.add(
+                "SIGNATURE_INVALID_MARKED_TRUSTED", source,
+                "invalid signature is marked with trusted identity",
+            )
+    for item in ledger.all_attachments():
+        source = f"{item['message_source']}/{item['message_path']}"
+        message = verdicts.get(source)
+        if message is None:
+            continue
+        if message["signature_integrity"] == "invalid":
+            if item["status"] in ("accepted", "duplicate"):
+                issues.add(
+                    "INVALID_SIGNATURE_ATTACHMENT_ACCEPTED", source,
+                    f"attachment {item['part_id']} is accepted under an invalid signature",
+                )
+            if item["object_path"] and not item["quarantine_path"]:
+                issues.add(
+                    "INVALID_SIGNATURE_ATTACHMENT_DOWNLOADABLE", source,
+                    f"attachment {item['part_id']} would be served as a trusted object",
+                )
+
+
 def verify_workdir(workdir: Path) -> VerificationResult:
     workdir = workdir.expanduser().resolve(strict=False)
     result = VerificationResult(workdir=workdir)
@@ -166,6 +204,7 @@ def verify_workdir(workdir: Path) -> VerificationResult:
     try:
         with Ledger(workdir, readonly=True) as ledger:
             expected = _expected_references(ledger, issues)
+            _check_signature_evidence(ledger, issues)
     except LedgerError as exc:
         issues.add(exc.code, "ledger.sqlite3", exc.detail)
         expected = {}

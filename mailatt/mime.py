@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import datetime, timezone
 from email import policy as email_policy
 from email.errors import (
     CloseBoundaryNotFoundDefect,
@@ -14,8 +14,16 @@ from email.message import Message
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 
+from .config import TrustConfig
 from .errors import MimeParseError
-from .models import AttachmentCandidate, ParsedMessage
+from .models import (
+    AttachmentCandidate,
+    ParsedMessage,
+    SignatureEvidence,
+    SignatureIntegrity,
+    SignatureTrust,
+)
+from .rawmime import verify_from_raw
 from .util import (
     decode_header_value,
     detect_path_traversal,
@@ -35,6 +43,9 @@ class MimeOptions:
     allow_nested_messages: bool = True
     max_nested_depth: int = 3
     max_filename_length: int = 120
+    verify_signatures: bool = True
+    trust: TrustConfig = TrustConfig()
+    signature_time: datetime | None = None
 
 
 def _defects(part: Message) -> tuple[object, ...]:
@@ -90,6 +101,12 @@ def _payload_bytes(part: Message) -> bytes:
     return payload
 
 
+SIGNATURE_MEDIA_TYPES = {
+    "application/pkcs7-signature",
+    "application/x-pkcs7-signature",
+}
+
+
 class _Collector:
     def __init__(self, options: MimeOptions) -> None:
         self.options = options
@@ -101,6 +118,15 @@ class _Collector:
         ctype = part.get_content_type().lower()
         if ctype == "message/rfc822":
             self._walk_nested(part, nested_depth)
+            return
+        if ctype == "multipart/signed":
+            # Only the signed content is message payload; the detached
+            # signature part is evidence, not an attachment.
+            payload = part.get_payload()
+            if isinstance(payload, list) and payload:
+                self.walk(payload[0], nested_depth)
+            return
+        if ctype in SIGNATURE_MEDIA_TYPES:
             return
         if part.is_multipart():
             payload = part.get_payload()
@@ -174,6 +200,30 @@ def _sent_at(message: Message) -> str:
         return ""
 
 
+def _signature_evidence(
+    data: bytes, options: MimeOptions
+) -> SignatureEvidence:
+    if not options.verify_signatures:
+        return SignatureEvidence(
+            integrity=SignatureIntegrity.UNVERIFIABLE,
+            trust=SignatureTrust.NOT_APPLICABLE,
+            reason_code="signature_verification_disabled",
+            reason="signature verification was disabled by configuration",
+        )
+    try:
+        evidence, _ = verify_from_raw(
+            data, options.trust, options.signature_time
+        )
+    except Exception as exc:
+        return SignatureEvidence(
+            integrity=SignatureIntegrity.UNVERIFIABLE,
+            trust=SignatureTrust.NOT_APPLICABLE,
+            reason_code="signature_verification_error",
+            reason=f"signature verification could not run: {type(exc).__name__}",
+        )
+    return evidence
+
+
 def parse_message(data: bytes, options: MimeOptions | None = None) -> ParsedMessage:
     """Parse a raw message; malformed structure raises a stable MIME error."""
     if not data or not data.strip():
@@ -207,6 +257,7 @@ def parse_message(data: bytes, options: MimeOptions | None = None) -> ParsedMess
         for item in all_defects
         if not isinstance(item, FATAL_DEFECTS)
     )
+    signature = _signature_evidence(data, options)
     return ParsedMessage(
         message_id=_message_id(message),
         subject=_subject(message),
@@ -214,4 +265,5 @@ def parse_message(data: bytes, options: MimeOptions | None = None) -> ParsedMess
         sent_at=_sent_at(message),
         candidates=tuple(collector.candidates),
         warnings=tuple(sorted(warnings)),
+        signature=signature,
     )

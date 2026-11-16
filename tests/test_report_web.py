@@ -103,7 +103,7 @@ def test_web_index_and_api(demo_run) -> None:
     assert set(attachments["attachments"][0]) == {
         "id", "message_source", "message_path", "part_id", "sha256", "size",
         "safe_filename", "media_type", "status", "reason_code", "object_path",
-        "quarantine_path",
+        "quarantine_path", "signature_status", "signature_reason_code",
     }
 
 

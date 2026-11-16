@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
 
 from .errors import ConfigurationError
 from .util import is_within, sha256_bytes
 
 SOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-TOP_LEVEL_KEYS = {"version", "sources", "policy", "workdir"}
+ANCHOR_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+TOP_LEVEL_KEYS = {"version", "sources", "policy", "workdir", "trust"}
+TRUST_KEYS = {"anchors"}
+ANCHOR_KEYS = {"name", "certificate"}
+MAX_ANCHOR_BYTES = 1024 * 1024
+PRIVATE_KEY_MARKERS = (b"PRIVATE KEY", b"OPENSSH PRIVATE KEY", b"RSA PRIVATE KEY")
+
 
 DEFAULT_QUARANTINE_EXTENSIONS = (
     ".bat", ".cmd", ".com", ".cpl", ".dll", ".docm", ".exe", ".hta",
@@ -86,15 +94,64 @@ class SourceConfig:
 
 
 @dataclass(frozen=True)
+class TrustAnchor:
+    """One certificate explicitly pinned as a local trust anchor.
+
+    The certificate itself is kept out of reports; only its SHA-256 fingerprint
+    and a caller-supplied label are disclosed.
+    """
+
+    name: str
+    fingerprint_sha256: str
+    path: str
+    certificate: x509.Certificate = field(repr=False, compare=False)
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "name": self.name,
+            "fingerprint_sha256": self.fingerprint_sha256,
+            "path": self.path,
+        }
+
+
+@dataclass(frozen=True)
+class TrustConfig:
+    anchors: tuple[TrustAnchor, ...] = ()
+    fingerprint: str = ""
+
+    def anchor_fingerprints(self) -> tuple[str, ...]:
+        return tuple(anchor.fingerprint_sha256 for anchor in self.anchors)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "anchors": [anchor.as_dict() for anchor in self.anchors],
+            "fingerprint": self.fingerprint,
+        }
+
+
+@dataclass(frozen=True)
 class Config:
     sources: tuple[SourceConfig, ...]
     policy: PolicyConfig
     workdir: Path
     config_path: Path | None = None
+    trust: TrustConfig = field(default_factory=TrustConfig)
 
     @property
     def policy_fingerprint(self) -> str:
         payload = json.dumps(self.policy.as_dict(), sort_keys=True).encode("utf-8")
+        return sha256_bytes(payload)
+
+    @property
+    def evidence_fingerprint(self) -> str:
+        """Policy plus trust anchors: a change in either forces re-verification."""
+        payload = json.dumps(
+            {
+                "policy": self.policy.as_dict(),
+                "trust": [anchor.fingerprint_sha256 for anchor in self.trust.anchors],
+            },
+            sort_keys=True,
+        ).encode("utf-8")
         return sha256_bytes(payload)
 
     @property
@@ -194,6 +251,96 @@ def _resolve_path(value: str | Path, base: Path) -> Path:
     return _declared_path(value, base).resolve(strict=False)
 
 
+def _load_anchor(row: Any, index: int, base_dir: Path) -> TrustAnchor:
+    if not isinstance(row, dict):
+        raise _fail(f"trust.anchors[{index}] must be a mapping")
+    unknown = sorted(set(row) - ANCHOR_KEYS)
+    if unknown:
+        raise _fail(f"trust.anchors[{index}] has unknown keys: {', '.join(unknown)}")
+    name = row.get("name")
+    certificate = row.get("certificate")
+    if not isinstance(name, str) or not ANCHOR_NAME_RE.fullmatch(name):
+        raise _fail(f"trust.anchors[{index}].name is invalid")
+    if not isinstance(certificate, str) or not certificate.strip():
+        raise _fail(f"trust.anchors[{index}].certificate is invalid")
+    declared = _declared_path(certificate, base_dir)
+    if declared.is_symlink():
+        raise ConfigurationError(
+            f"trust anchor cannot be a symlink: {certificate}", code="TRUST_ANCHOR_UNSAFE"
+        )
+    resolved = declared.resolve(strict=False)
+    if not resolved.is_file():
+        raise ConfigurationError(
+            f"trust anchor not found: {certificate}", code="TRUST_ANCHOR_NOT_FOUND"
+        )
+    try:
+        if resolved.stat().st_size > MAX_ANCHOR_BYTES:
+            raise _fail(f"trust.anchors[{index}].certificate is too large")
+        data = resolved.read_bytes()
+    except OSError as exc:
+        raise ConfigurationError(
+            f"cannot read trust anchor: {certificate}", code="TRUST_ANCHOR_NOT_FOUND"
+        ) from exc
+    if any(marker in data for marker in PRIVATE_KEY_MARKERS):
+        raise ConfigurationError(
+            f"trust anchor must not contain a private key: {certificate}",
+            code="TRUST_ANCHOR_UNSAFE",
+        )
+    try:
+        cert = x509.load_pem_x509_certificate(data)
+    except ValueError:
+        try:
+            cert = x509.load_der_x509_certificate(data)
+        except ValueError as exc:
+            raise _fail(
+                f"trust.anchors[{index}].certificate is not a certificate"
+            ) from exc
+    try:
+        constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        is_ca = constraints.ca
+    except x509.ExtensionNotFound:
+        is_ca = True
+    if not is_ca:
+        raise _fail(f"trust.anchors[{index}].certificate is not a CA certificate")
+    fingerprint = cert.fingerprint(hashes.SHA256()).hex()
+    return TrustAnchor(
+        name=name,
+        fingerprint_sha256=fingerprint,
+        path=certificate,
+        certificate=cert,
+    )
+
+
+def _trust_from_mapping(raw: Any, base_dir: Path) -> TrustConfig:
+    if raw is None:
+        return TrustConfig()
+    if not isinstance(raw, dict):
+        raise _fail("trust must be a mapping")
+    unknown = sorted(set(raw) - TRUST_KEYS)
+    if unknown:
+        raise _fail(f"unknown trust keys: {', '.join(unknown)}")
+    rows = raw.get("anchors", [])
+    if not isinstance(rows, list):
+        raise _fail("trust.anchors must be a list")
+    anchors: list[TrustAnchor] = []
+    names: set[str] = set()
+    fingerprints: set[str] = set()
+    for index, row in enumerate(rows):
+        anchor = _load_anchor(row, index, base_dir)
+        if anchor.name in names:
+            raise _fail(f"duplicate trust anchor name: {anchor.name}")
+        if anchor.fingerprint_sha256 in fingerprints:
+            raise _fail("duplicate trust anchor certificate")
+        names.add(anchor.name)
+        fingerprints.add(anchor.fingerprint_sha256)
+        anchors.append(anchor)
+    ordered = tuple(sorted(anchors, key=lambda item: item.name))
+    fingerprint = sha256_bytes(
+        json.dumps([item.fingerprint_sha256 for item in ordered], sort_keys=True).encode("utf-8")
+    )
+    return TrustConfig(anchors=ordered, fingerprint=fingerprint)
+
+
 def _validate_workdir(workdir: Path, sources: Iterable[SourceConfig]) -> None:
     workdir = workdir.resolve(strict=False)
     if workdir == Path(workdir.anchor):
@@ -269,6 +416,7 @@ def load_config(path: str | Path, *, workdir_override: str | Path | None = None)
         sources.append(SourceConfig(name=name, path=resolved, kind=kind))
 
     policy = _policy_from_mapping(raw.get("policy"))
+    trust = _trust_from_mapping(raw.get("trust"), base_dir)
     workdir_value = workdir_override if workdir_override is not None else raw.get("workdir", ".mailatt-work")
     if not isinstance(workdir_value, (str, Path)):
         raise _fail("workdir must be a path string")
@@ -283,6 +431,7 @@ def load_config(path: str | Path, *, workdir_override: str | Path | None = None)
         policy=policy,
         workdir=workdir,
         config_path=config_path,
+        trust=trust,
     )
 
 

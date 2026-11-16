@@ -1,0 +1,28 @@
+From: trusted@demo.invalid
+To: archive@demo.invalid
+Subject: Trusted signed note
+Date: Mon, 15 Jan 2024 09:30:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/signed; protocol="application/pkcs7-signature"; micalg="sha-256"; boundary="demo-signed-boundary"
+
+--demo-signed-boundary
+Content-Type: multipart/mixed; boundary="demo-inner"
+
+--demo-inner
+Content-Type: text/plain; charset=us-ascii
+
+Signed quarterly note.
+--demo-inner
+Content-Type: text/plain; name="note.txt"
+Content-Disposition: attachment; filename="note.txt"
+Content-Transfer-Encoding: 7bit
+
+signed attachment payload
+--demo-inner--
+--demo-signed-boundary
+Content-Type: application/pkcs7-signature; name="smime.p7s"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="smime.p7s"
+
+
+--demo-signed-boundary--

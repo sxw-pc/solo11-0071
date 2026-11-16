@@ -1,0 +1,55 @@
+From: selfsigned@demo.invalid
+To: archive@demo.invalid
+Subject: Self-signed signed note
+Date: Mon, 15 Jan 2024 09:30:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/signed; protocol="application/pkcs7-signature"; micalg="sha-256"; boundary="demo-signed-boundary"
+
+--demo-signed-boundary
+Content-Type: multipart/mixed; boundary="demo-inner"
+
+--demo-inner
+Content-Type: text/plain; charset=us-ascii
+
+Signed quarterly note.
+--demo-inner
+Content-Type: text/plain; name="note.txt"
+Content-Disposition: attachment; filename="note.txt"
+Content-Transfer-Encoding: 7bit
+
+signed attachment payload
+--demo-inner--
+--demo-signed-boundary
+Content-Type: application/pkcs7-signature; name="smime.p7s"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="smime.p7s"
+
+MIIGDAYJKoZIhvcNAQcCoIIF/TCCBfkCAQExDzANBglghkgBZQMEAgEFADALBgkqhkiG9w0BBwGg
+ggOQMIIDjDCCAnSgAwIBAgIHU0VMRlNJRzANBgkqhkiG9w0BAQsFADBmMRswGQYDVQQDDBJTZWxm
+LVNpZ25lZCBTZW5kZXIxHzAdBgNVBAoMFm1haWxhdHQgc3ludGhldGljIGRlbW8xJjAkBgkqhkiG
+9w0BCQEWF3NlbGZzaWduZWRAZGVtby5pbnZhbGlkMB4XDTI0MDEwMTAwMDAwMFoXDTM2MDEwMTAw
+MDAwMFowZjEbMBkGA1UEAwwSU2VsZi1TaWduZWQgU2VuZGVyMR8wHQYDVQQKDBZtYWlsYXR0IHN5
+bnRoZXRpYyBkZW1vMSYwJAYJKoZIhvcNAQkBFhdzZWxmc2lnbmVkQGRlbW8uaW52YWxpZDCCASIw
+DQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAN6Lqnbci6ru8vbaFKuffnHWjUbA2rkR8uDXIE7i
+wZ2dilV8G8XvmhMCRFXWtg00UmlplrxWIf+sUXwFangi8wchXQNpiCP5TK/npapRpEZdl4ucu8Ty
+Gv+Ycv6DtyOCmgUZagqbST4zjLUcOiofK8D3cRK4BwQvsHjWGFnA65zF1VVzkANpNW2FAVSHxdpE
+itUQ/FNkp0lDPQ6nx0LICzaXJ3xocLSppogngJigl48e5//mpqPWHp0c/STdO9zmyKdOdQdapyPr
+k2tr2qCCUf9EdLIRINcskQJFw/EjN9fTQ+3B4PepstS1tjDcc6mdVJg4qr7gp3L1ZB+q89eS7FsC
+AwEAAaM/MD0wDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwHQYDVR0OBBYEFLpXThjpuBmt
+VWf7sdyptgfnpUfUMA0GCSqGSIb3DQEBCwUAA4IBAQCA2oVVqnvx82X7ABZ77Z6udqXlICIfnjVX
+U29MieeRhaAAvPaBjYaXnfoNvxR+lPEpoUYt84JKS+6SYwNxpR+ZKljs5uA6cs29UnGyaTM7YmzA
+XbUlddQTXeg8lsYVtRO3SbaMpN6TSVSWKnAoEpFLZStOoa9WC+kRWpPCmgqyKA2RtCal4z0mbtbQ
+D38dARafMhmWyo/i8XArZZdqi+azSSF+QIyQxbgB8RzFZ/c0BvTbPqYEemoa2I0Sjzx1GarvPoKq
+ysmBjfZe68fVtmHuja5kqTA61S+uApX9yvHDxnhgkulGQD4OeNtINZFE6GrP01KVk5HS7odASWIa
+ekDTMYICQDCCAjwCAQEwcTBmMRswGQYDVQQDDBJTZWxmLVNpZ25lZCBTZW5kZXIxHzAdBgNVBAoM
+Fm1haWxhdHQgc3ludGhldGljIGRlbW8xJjAkBgkqhkiG9w0BCQEWF3NlbGZzaWduZWRAZGVtby5p
+bnZhbGlkAgdTRUxGU0lHMA0GCWCGSAFlAwQCAQUAoIGhMBgGCSqGSIb3DQEJAzELBgkqhkiG9w0B
+BwEwHAYJKoZIhvcNAQkFMQ8XDTI2MTExNjA1NTI1N1owLwYJKoZIhvcNAQkEMSIEIOIWDZdSfILf
+g1AJXSka8flQJE9B0xRabELZzFKaboMSMDYGCSqGSIb3DQEJDzEpMCcwCwYJYIZIAWUDBAEqMAsG
+CWCGSAFlAwQBFjALBglghkgBZQMEAQIwDQYJKoZIhvcNAQEBBQAEggEANu75HUCyYPv8NfAoEjo8
+wcGYwVhAGpAzMEtKGwTzQksQ9UR0aQUJ0MiSos6FeeGVdcttFsieFK24ZVqvC/d0Rv8cT7Wby69/
+GQa0dBNd0OQLE45G/+WnSdcMyayOlqKoY1coOsAOHNS3nz4JGe5D4Spu+FOhUOWPqFbiYjCpFUkb
+nB4PoVOVr1Ow+eBpC2XEi5zav3GXpai+hD9OPmPcqxDJZD0fNEjMyxkjKc7zAnfXrgjMUWJ0NtC5
+7ILyz6AcqG75BL0rGRI1ViIqERv+OTyl/lAFYqtwUvPtKAZlldpqB7GllefT0m/IsKdiFKy9X7U/
+/sdwNTaqvB2eye378g==
+--demo-signed-boundary--

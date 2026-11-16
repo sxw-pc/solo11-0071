@@ -5,12 +5,17 @@
 写入 SQLite 台账，生成 JSON / Markdown / 自包含 HTML 审计报告，并提供仅监听
 `127.0.0.1` 的只读复核台。
 
+从 0.2 起，它还会离线核验 `multipart/signed`（S/MIME / CMS）邮件证据，并把
+**“签名字节有效”** 与 **“签名者受本地信任”** 分成两个独立结论：自签名或未知锚证书
+即使签名数学正确，也只报告 `integrity_valid_but_untrusted`，不会被写成可信发件人。
+
 仓库中的全部邮件、地址、域名和附件都是合成 fixture。示例域名统一为
 `demo.invalid`，不含真实邮件、凭据或可执行附件。
 
 ## 快速开始
 
 ```bash
+python -m pip install -e '.[test]'
 python -m mailatt demo
 pytest -q
 python -m mailatt serve --workdir .mailatt-demo
@@ -95,6 +100,28 @@ policy:
 `auto` 在存在 `cur/` 或 `new/` 时按 Maildir 处理。数据流与模块边界见
 `docs/ARCHITECTURE.md`，门禁顺序见 `docs/POLICY.md`。
 
+### 信任锚（可选）
+
+签名完整性完全由邮件字节与 CMS 签名决定，与配置无关。**信任**则需要本机显式配置的
+证书锚；不配置时，所有有效签名都只报告 `integrity_valid_but_untrusted`。信任锚只接受
+PEM/DER 证书文件，拒绝私钥、符号链接、非 CA 证书与重复指纹：
+
+```yaml
+version: 1
+sources:
+  - name: signed-mail
+    path: ./export/signed
+    kind: eml
+trust:
+  anchors:
+    - name: demo-root
+      certificate: ./certs/demo-root.pem
+policy: {}
+```
+
+验证器不联网获取证书、CRL 或 OCSP，也不需要任何私钥。证书有效性按 CMS 中的
+`signingTime`（若有）或运行时钟判断；这只会缩小信任范围，不会把未受信证书变成可信。
+
 ## 命令
 
 ```bash
@@ -109,9 +136,18 @@ python -m mailatt run --config fixtures/policy/demo.yaml --workdir .mailatt-demo
 python -m mailatt verify --workdir .mailatt-demo
 python -m mailatt verify --workdir .mailatt-demo --json
 
+# 离线核验单个签名邮件的来源认证证据
+python -m mailatt signature --eml fixtures/signed/mail/0001.trusted.eml \
+    --config fixtures/policy/signed.yaml
+python -m mailatt signature --eml fixtures/signed/mail/0003.tampered.eml \
+    --config fixtures/policy/signed.yaml --json
+
 # 仅监听 127.0.0.1 的只读复核台
 python -m mailatt serve --workdir .mailatt-demo --port 8766
 ```
+
+`signature` 只读取本地 `.eml` 与本地证书，输出 `integrity`、`trust`、`verdict`、
+`reason_code` 与签发者证书指纹；不读取邮件服务器、不查询撤销列表、不需要私钥。
 
 复核台只提供 GET 读取与已归档对象的下载；隔离与拒绝项只显示元数据。POST、PUT、
 PATCH、DELETE 均返回 405。服务不允许绑定 `0.0.0.0` 或其他非回环地址。
@@ -131,7 +167,23 @@ PATCH、DELETE 均返回 405。服务不允许绑定 `0.0.0.0` 或其他非回�
 ```
 
 `manifest.json` 只列出当前实际存在且被台账引用的对象。`verify` 会重算全部对象哈希，
-检查缺失、损坏、孤儿对象、manifest 与台账不一致，以及不安全路径。发现问题时退出码为 1。
+检查缺失、损坏、孤儿对象、manifest 与台账不一致，以及不安全路径。它还会交叉检查签名
+证据：`invalid` 邮件的附件不得以 `accepted` / 可下载对象出现，`trusted` 结论必须带有
+本地锚指纹。发现问题时退出码为 1。
+
+## 来源认证结论
+
+| 结论 | 含义 | 可下载 |
+| --- | --- | --- |
+| `not_signed` | 没有 `multipart/signed` 层 | 按附件策略 |
+| `trusted` | 签名字节有效，且签发证书链到本地锚 | 是 |
+| `integrity_valid_but_untrusted` | 签名字节有效，但签发者自签或链到未知锚 | 是（响应头标注未受信） |
+| `invalid` | 被签 MIME 字节与摘要/签名不匹配 | 否；附件强制进入隔离区 |
+| `unverifiable` | 格式不支持、签名材料缺失或结构无法切分 | 按附件策略，页面标注未验证 |
+
+这些结论与当前源邮件摘要是绑定的：台账同时记录 `evidence_hash`（源摘要 + 完整签名
+证据）与 `evidence_config_hash`（策略 + 信任锚集合）。源字节或锚集合任一变化，下一次
+扫描都会重新验证，而不是沿用旧的 `trusted`。
 
 ## 测试
 
@@ -141,11 +193,15 @@ pytest -q
 
 测试覆盖配置校验、稳定发现、增量跳过、MIME 与嵌套邮件、RFC 2047、策略门禁、
 内容寻址去重、SQLite 幂等、失败隔离、完整性校验、报告转义、只读 Web 服务和 CLI。
-测试不访问网络，全部使用本地合成 fixture。
+签名测试额外覆盖：可信锚、自签未信任、篡改、缺材料、锚变更重验、台账迁移与完全
+离线的执行路径。测试不访问网络，全部使用本地合成 fixture 与运行期内存生成的
+合成证书（私钥不落盘、不进仓库）。
 
 ## 明确不做
 
 - 不连接 IMAP / POP3 / SMTP / Exchange / Graph，不发送、不写回、不删除邮件。
+- 不联网拉取证书、CRL、OCSP 或时间戳；签名验证只使用邮件内嵌证书与本机配置的锚。
+- 不验证 PGP / OpenPGP 签名；非 CMS 的签名格式只报告 `unverifiable`。
 - 不抓取网页，不解析远程 HTML、图片或样式。
 - 不做 OCR、附件内容理解、全文检索、预览渲染、病毒查杀或宏检测。
 - 不做用户系统、多租户、云存储、分布式调度或通用文件管理。

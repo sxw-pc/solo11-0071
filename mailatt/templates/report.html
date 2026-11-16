@@ -83,6 +83,65 @@
     </div>
   </header>
 
+  <h2>来源认证证据</h2>
+  <div class="panel">
+    <p class="muted" style="padding: 12px 14px; margin: 0;">
+      签名完整性（integrity）只表示签名字节覆盖了当前 MIME 内容；身份可信（trust）只在签发证书链到本机显式配置的信任锚时成立。
+      自签名或未知锚证书即使数学签名正确，也只记为 <code>integrity_valid_but_untrusted</code>。
+      本工具不联网获取证书、CRL 或 OCSP，也不断言邮件头中的发件人就是签名者。
+    </p>
+    <table>
+      <thead><tr><th>结论</th><th>邮件数</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag s-accepted">trusted</span></td><td>{{ report.summary.get('signatures', {}).get('trusted', 0) }}</td><td>签名字节有效，且签发证书链到本地锚</td></tr>
+        <tr><td><span class="tag s-rejected">integrity_valid_but_untrusted</span></td><td>{{ report.summary.get('signatures', {}).get('integrity_valid_but_untrusted', 0) }}</td><td>签名字节有效，但签发者不受本地信任</td></tr>
+        <tr><td><span class="tag s-rejected">integrity_valid_trust_undetermined</span></td><td>{{ report.summary.get('signatures', {}).get('integrity_valid_trust_undetermined', 0) }}</td><td>签名字节有效，信任状态无法判定</td></tr>
+        <tr><td><span class="tag s-duplicate">integrity_valid</span></td><td>{{ report.summary.get('signatures', {}).get('integrity_valid', 0) }}</td><td>数学有效的签名合计（含 trusted 与未信任）</td></tr>
+        <tr><td><span class="tag s-quarantined">invalid</span></td><td>{{ report.summary.get('signatures', {}).get('invalid', 0) }}</td><td>被签字节与签名不匹配</td></tr>
+        <tr><td><span class="tag s-quarantined">unverifiable</span></td><td>{{ report.summary.get('signatures', {}).get('unverifiable', 0) }}</td><td>格式不支持或签名材料缺失</td></tr>
+        <tr><td><span class="tag">not_signed</span></td><td>{{ report.summary.get('signatures', {}).get('not_signed', 0) }}</td><td>没有 multipart/signed 层</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>本地信任锚</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>名称</th><th>SHA-256 指纹</th><th>来源</th></tr></thead>
+      <tbody>
+      {% for anchor in report.get('signature_policy', {}).get('anchors', []) %}
+        <tr>
+          <td>{{ anchor.name }}</td>
+          <td class="mono">{{ anchor.fingerprint_sha256 }}</td>
+          <td class="mono">{{ anchor.path }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="3" class="empty">未配置信任锚；所有有效签名均标记为未被本地信任。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h2>签名邮件台账</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>来源</th><th>完整性</th><th>信任</th><th>签发者证书指纹</th><th>签发者</th><th>结论</th><th>原因</th></tr></thead>
+      <tbody>
+      {% for item in report.messages %}
+        <tr>
+          <td class="mono">{{ item.source_name }}/{{ item.relative_path }}</td>
+          <td>{{ item.get('signature', {}).get('integrity', 'not_signed') }}</td>
+          <td>{{ item.get('signature', {}).get('trust', 'not_applicable') }}</td>
+          <td class="mono">{{ item.get('signature', {}).get('signer', {}).get('fingerprint_sha256', '—') if item.get('signature', {}).get('signer') else '—' }}</td>
+          <td>{{ item.get('signature', {}).get('signer', {}).get('subject', '—') if item.get('signature', {}).get('signer') else '—' }}</td>
+          <td><span class="tag s-{{ 'accepted' if item.signature.verdict == 'trusted' else ('error' if item.signature.verdict == 'invalid' else ('rejected' if item.signature.verdict == 'integrity_valid_but_untrusted' else 'duplicate')) }}">{{ item.get('signature', {}).get('verdict', 'not_signed') }}</span></td>
+          <td class="mono">{{ item.get('signature', {}).get('reason_code', '') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
   <h2>内容寻址对象</h2>
   <div class="panel">
     {% if report.objects %}
@@ -109,7 +168,7 @@
   <div class="panel">
     {% if report.attachments %}
     <table>
-      <thead><tr><th>状态</th><th>来源</th><th>原始文件名</th><th>MIME</th><th>字节</th><th>原因</th><th>存储路径</th></tr></thead>
+      <thead><tr><th>状态</th><th>来源</th><th>原始文件名</th><th>MIME</th><th>字节</th><th>来源认证</th><th>原因</th><th>存储路径</th></tr></thead>
       <tbody>
       {% for item in report.attachments %}
         <tr>
@@ -118,6 +177,7 @@
           <td>{{ item.filename }}</td>
           <td>{{ item.media_type }}</td>
           <td>{{ item.size }}</td>
+          <td><span class="tag s-{{ 'error' if item.signature_status == 'signature_invalid' else ('rejected' if item.signature_status in ('untrusted_signer', 'unverifiable') else '') }}">{{ item.signature_status or "none" }}</span></td>
           <td class="mono">{{ item.reason_code }}</td>
           <td class="mono">{{ item.quarantine_path or item.object_path or "—" }}</td>
         </tr>
@@ -130,7 +190,7 @@
   <h2>邮件台账</h2>
   <div class="panel">
     <table>
-      <thead><tr><th>状态</th><th>来源</th><th>主题</th><th>发件人</th><th>时间</th><th>附件</th></tr></thead>
+      <thead><tr><th>状态</th><th>来源</th><th>主题</th><th>发件人</th><th>签名结论</th><th>时间</th><th>附件</th></tr></thead>
       <tbody>
       {% for item in report.messages %}
         <tr>
@@ -138,6 +198,7 @@
           <td class="mono">{{ item.source_name }}/{{ item.relative_path }}</td>
           <td>{{ item.subject or "（无主题）" }}</td>
           <td>{{ item.sender }}</td>
+          <td><span class="tag s-{{ 'accepted' if item.signature.verdict == 'trusted' else ('error' if item.signature.verdict == 'invalid' else ('rejected' if item.signature.verdict == 'integrity_valid_but_untrusted' else 'duplicate')) }}">{{ item.get('signature', {}).get('verdict', 'not_signed') }}</span></td>
           <td class="mono">{{ item.sent_at or "—" }}</td>
           <td>{{ item.attachment_count }}</td>
         </tr>

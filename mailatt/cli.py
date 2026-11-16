@@ -43,6 +43,10 @@ def _print_collection(result: object) -> None:
     print(f"清单：{result.manifest_path}")
     for kind in ("json", "markdown", "html"):
         print(f"报告 {kind}: {result.report_paths[kind]}")
+    if summary.signature_verdicts:
+        print("来源认证：")
+        for verdict, count in sorted(summary.signature_verdicts.items()):
+            print(f"  - {verdict}: {count}")
     if summary.errors:
         print("失败隔离：")
         for item in summary.errors:
@@ -104,6 +108,38 @@ def _command_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_signature(args: argparse.Namespace) -> int:
+    """Verify one local .eml snapshot against configured trust anchors."""
+    from .config import TrustConfig
+    from .rawmime import verify_from_raw
+
+    config = load_config(args.config) if args.config else None
+    trust = config.trust if config is not None else TrustConfig()
+    path = Path(args.eml).expanduser().resolve()
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise MailattError(f"cannot read message: {exc}", code="MESSAGE_FAILED") from exc
+    evidence, _ = verify_from_raw(data, trust, None)
+    payload = evidence.as_dict()
+    payload["path"] = str(path)
+    payload["anchors"] = list(trust.anchor_fingerprints())
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(f"完整性：{evidence.integrity.value}")
+        print(f"本地信任：{evidence.trust.value}")
+        print(f"结论：{evidence.verdict}")
+        print(f"原因：{evidence.reason_code} — {evidence.reason}")
+        if evidence.signer is not None:
+            print(f"签发者：{evidence.signer.subject}")
+            print(f"证书指纹：{evidence.signer.fingerprint_sha256}")
+            print(f"自签名：{'是' if evidence.signer.self_issued else '否'}")
+        if evidence.anchor_fingerprint:
+            print(f"命中信任锚：{evidence.anchor_fingerprint}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mailatt",
@@ -128,6 +164,16 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--workdir", default=".mailatt-demo")
     verify.add_argument("--json", action="store_true", help="输出 JSON 结果")
     verify.set_defaults(handler=_command_verify)
+
+    signature = sub.add_parser(
+        "signature", help="离线验证单个 .eml 的 multipart/signed 证据"
+    )
+    signature.add_argument("--eml", required=True, help="本地 .eml 快照路径")
+    signature.add_argument(
+        "--config", default=None, help="YAML 配置，提供本机信任锚（可选）"
+    )
+    signature.add_argument("--json", action="store_true", help="输出 JSON 结果")
+    signature.set_defaults(handler=_command_signature)
 
     serve = sub.add_parser("serve", help="启动 127.0.0.1 只读复核台")
     serve.add_argument("--workdir", default=".mailatt-demo")

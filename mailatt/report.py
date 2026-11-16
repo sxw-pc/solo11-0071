@@ -15,6 +15,54 @@ from .util import atomic_write_json, atomic_write_text, iso_utc, read_json, utc_
 
 REPORT_SCHEMA = "1.0"
 
+SIGNATURE_FIELDS = (
+    "signature_integrity",
+    "signature_trust",
+    "signature_verdict",
+    "signature_reason_code",
+    "signature_reason",
+    "signature_signed_digest",
+    "signature_blob_sha256",
+    "signature_anchor_fingerprint",
+    "evidence_hash",
+)
+
+
+def _signature_view(message: dict[str, Any]) -> dict[str, Any]:
+    """Decode signer metadata and drop anything that could imply false trust."""
+    signer: dict[str, Any] = {}
+    try:
+        parsed = json.loads(str(message.get("signature_signer_json", "{}") or "{}"))
+        if isinstance(parsed, dict):
+            signer = parsed
+    except json.JSONDecodeError:
+        signer = {}
+    integrity = str(message.get("signature_integrity") or "not_signed")
+    trust = str(message.get("signature_trust") or "not_applicable")
+    verdict = str(message.get("signature_verdict") or integrity)
+    return {
+        "integrity": integrity,
+        "trust": trust,
+        "verdict": verdict,
+        "reason_code": str(message.get("signature_reason_code") or ""),
+        "reason": str(message.get("signature_reason") or ""),
+        "signed_content_sha256": str(message.get("signature_signed_digest") or ""),
+        "signature_sha256": str(message.get("signature_blob_sha256") or ""),
+        "anchor_fingerprint": str(message.get("signature_anchor_fingerprint") or ""),
+        "evidence_hash": str(message.get("evidence_hash") or ""),
+        "signer": {
+            "subject": str(signer.get("subject") or ""),
+            "issuer": str(signer.get("issuer") or ""),
+            "serial": str(signer.get("serial") or ""),
+            "fingerprint_sha256": str(signer.get("fingerprint_sha256") or ""),
+            "not_before": str(signer.get("not_before") or ""),
+            "not_after": str(signer.get("not_after") or ""),
+            "self_issued": bool(signer.get("self_issued", False)),
+        }
+        if signer
+        else None,
+    }
+
 
 def _safe_manifest(config: Config) -> dict[str, Any]:
     path = config.workdir / "manifest.json"
@@ -44,13 +92,42 @@ def build_payload(config: Config, ledger: Ledger, generated_at: str) -> dict[str
 
     for message in messages:
         message["warnings"] = _parse_warnings(str(message.get("warnings_json", "[]")))
+        message["signature"] = _signature_view(message)
         message["attachment_count"] = sum(
             1 for item in attachments if item["message_id"] == message["id"]
+        )
+        message["sender_authentication"] = (
+            "message-level only; sender header is not authenticated by this tool"
         )
     message_counts = {
         "total": len(messages),
         "ok": sum(item["status"] == "ok" for item in messages),
         "error": sum(item["status"] == "error" for item in messages),
+    }
+    signature_counts = {
+        verdict: sum(
+            item["signature"]["verdict"] == verdict for item in messages
+        )
+        for verdict in (
+            "not_signed",
+            "trusted",
+            "integrity_valid_but_untrusted",
+            "integrity_valid_trust_undetermined",
+            "invalid",
+            "unverifiable",
+        )
+    }
+    # Roll-up: every message whose signature mathematically checks out,
+    # regardless of whether the signer is locally trusted.
+    signature_counts["integrity_valid"] = sum(
+        item["signature"]["integrity"] == "valid" for item in messages
+    )
+    signature_counts["trusted"] = sum(
+        item["signature"]["verdict"] == "trusted" for item in messages
+    )
+    attachment_signature_counts = {
+        status: sum(item.get("signature_status") == status for item in attachments)
+        for status in ("none", "untrusted_signer", "unverifiable", "signature_invalid")
     }
     by_status = {key: 0 for key in ("accepted", "quarantined", "rejected", "duplicate")}
     for item in attachments:
@@ -63,6 +140,7 @@ def build_payload(config: Config, ledger: Ledger, generated_at: str) -> dict[str
         "accepted": sum(item.get("status") == "accepted" for item in objects),
         "quarantined": sum(item.get("status") == "quarantined" for item in objects),
     }
+    trust = config.trust.as_dict()
     return {
         "schema_version": REPORT_SCHEMA,
         "generated_at": generated_at,
@@ -75,8 +153,21 @@ def build_payload(config: Config, ledger: Ledger, generated_at: str) -> dict[str
             "summary": last_run.get("summary", {}),
         },
         "sources": [source.name for source in config.sources],
+        "signature_policy": {
+            "offline_only": True,
+            "anchors": trust.get("anchors", []),
+            "anchor_count": len(trust.get("anchors", [])),
+            "network_access": "none",
+            "revocation_lookup": "not performed (offline)",
+            "identity_claim": (
+                "integrity proves only that the signature covers the bytes; "
+                "trusted requires a certificate chaining to a local anchor"
+            ),
+        },
         "summary": {
             "messages": message_counts,
+            "signatures": signature_counts,
+            "attachment_signatures": attachment_signature_counts,
             "attachments": {"total": len(attachments), "by_status": by_status},
             "objects": object_counts,
             "runs": ledger.count_rows("runs"),
@@ -116,33 +207,96 @@ def render_markdown(payload: dict[str, Any]) -> str:
     ]
     for key in ("accepted", "quarantined", "rejected", "duplicate"):
         lines.append(f"| 附件 {key} | {summary['attachments']['by_status'].get(key, 0)} |")
+    signatures = summary.get("signatures", {})
     lines.extend(
         [
             f"| 归档对象 | {summary['objects']['accepted']} |",
             f"| 隔离对象 | {summary['objects']['quarantined']} |",
             f"| 历史运行数 | {summary['runs']} |",
             "",
+            "## 来源认证证据",
+            "",
+            (
+                "签名完整性只表示签名字节覆盖了当前 MIME 内容；"
+                "只有签发证书链到本机显式配置的信任锚时才显示 trusted。"
+                "自签名或未知锚证书即使签名数学正确，也只记为 "
+                "`integrity_valid_but_untrusted`。本工具不联网取证书、CRL 或 OCSP。"
+            ),
+            "",
+            "| 结论 | 邮件数 |",
+            "| --- | ---: |",
+            f"| trusted | {signatures.get('trusted', 0)} |",
+            f"| integrity_valid_but_untrusted | {signatures.get('integrity_valid_but_untrusted', 0)} |",
+            f"| integrity_valid_trust_undetermined | {signatures.get('integrity_valid_trust_undetermined', 0)} |",
+            f"| 数学有效的签名合计 | {signatures.get('integrity_valid', 0)} |",
+            f"| invalid | {signatures.get('invalid', 0)} |",
+            f"| unverifiable | {signatures.get('unverifiable', 0)} |",
+            f"| not_signed | {signatures.get('not_signed', 0)} |",
+            "",
+            "| 信任锚名称 | SHA-256 指纹 | 来源 |",
+            "| --- | --- | --- |",
+        ]
+    )
+    anchors = payload.get("signature_policy", {}).get("anchors", [])
+    if anchors:
+        for anchor in anchors:
+            lines.append(
+                f"| {_md(anchor.get('name', ''))} | {_md(anchor.get('fingerprint_sha256', '') or '-')} | "
+                f"{_md(anchor.get('path', '') or '-')} |"
+            )
+    else:
+        lines.append("| （未配置信任锚，所有有效签名均为未被本地信任） | - | - |")
+    lines.extend(
+        [
+            "",
+            "## 签名邮件台账",
+            "",
+            "| 来源 | 完整性 | 信任 | 签发者证书指纹 | 签发者 | 结论 | 原因 |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in payload["messages"]:
+        signature = item.get("signature", {})
+        signer = signature.get("signer") or {}
+        source = f"{item['source_name']}/{item['relative_path']}"
+        lines.append(
+            "| {} | {} | {} | {} | {} | {} | {} |".format(
+                _md(source),
+                _md(signature.get("integrity", "not_signed")),
+                _md(signature.get("trust", "not_applicable")),
+                _md(signer.get("fingerprint_sha256", "-")),
+                _md(signer.get("subject", "-")),
+                _md(signature.get("verdict", "not_signed")),
+                _md(signature.get("reason_code", "")),
+            )
+        )
+    lines.extend(
+        [
+            "",
             "## 附件判定",
             "",
-            "| 来源 | 文件名 | MIME | 字节 | 判定 | 原因 | 对象路径 |",
-            "| --- | --- | --- | ---: | --- | --- | --- |",
+            "| 来源 | 文件名 | MIME | 字节 | 判定 | 来源认证 | 原因 | 对象路径 |",
+            "| --- | --- | --- | ---: | --- | --- | --- | --- |",
         ]
     )
     for item in payload["attachments"]:
         path = item["quarantine_path"] or item["object_path"] or "-"
         source = f"{item['message_source']}/{item['message_path']}"
         lines.append(
-            "| {} | {} | {} | {} | {} | {} | {} |".format(
+            "| {} | {} | {} | {} | {} | {} | {} | {} |".format(
                 _md(source), _md(item["safe_filename"]), _md(item["media_type"]),
-                item["size"], _md(item["status"]), _md(item["reason_code"]), _md(path),
+                item["size"], _md(item["status"]),
+                _md(item.get("signature_status") or "none"),
+                _md(item["reason_code"]), _md(path),
             )
         )
-    lines.extend(["", "## 邮件台账", "", "| 来源 | 主题 | 发件人 | 状态 | 排除数 |", "| --- | --- | --- | --- | ---: |"])
+    lines.extend(["", "## 邮件台账", "", "| 来源 | 主题 | 发件人 | 状态 | 签名结论 | 排除数 |", "| --- | --- | --- | --- | --- | ---: |"])
     for item in payload["messages"]:
         source = f"{item['source_name']}/{item['relative_path']}"
+        verdict = item.get("signature", {}).get("verdict", "not_signed")
         lines.append(
             f"| {_md(source)} | {_md(item['subject'])} | {_md(item['sender'])} | "
-            f"{_md(item['status'])} | {item['attachment_count']} |"
+            f"{_md(item['status'])} | {_md(verdict)} | {item['attachment_count']} |"
         )
     lines.extend(["", "## 失败隔离", ""])
     if payload["errors"]:
@@ -170,6 +324,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
             "```",
             "",
             "本报告仅引用本地合成 fixture 与本地归档对象，不包含远程资源引用。",
+            "签名验证完全离线执行；报告不含私钥、证书文件内容或联网取得的信息。",
             "",
         ]
     )

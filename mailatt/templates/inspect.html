@@ -86,6 +86,9 @@
     <div class="stat"><strong>{{ summary.by_status.accepted }}</strong><span>归档</span></div>
     <div class="stat"><strong>{{ summary.by_status.quarantined }}</strong><span>隔离</span></div>
     <div class="stat"><strong>{{ summary.by_status.rejected }}</strong><span>拒绝</span></div>
+    <div class="stat"><strong>{{ summary.signature_verdicts.get('trusted', 0) }}</strong><span>可信签名</span></div>
+    <div class="stat"><strong>{{ summary.signature_verdicts.get('integrity_valid_but_untrusted', 0) }}</strong><span>有效但未信任</span></div>
+    <div class="stat"><strong>{{ summary.signature_verdicts.get('invalid', 0) }}</strong><span>签名无效</span></div>
   </section>
   <p class="muted">最近运行：<code>{{ summary.last_run_id or "n/a" }}</code> · {{ summary.last_run_status or "n/a" }} · {{ summary.last_run_finished_at or "n/a" }}</p>
 
@@ -93,7 +96,7 @@
   <h2>邮件</h2>
   <div class="panel">
     <table>
-      <thead><tr><th>状态</th><th>来源</th><th>主题</th><th>发件人</th><th>附件</th></tr></thead>
+      <thead><tr><th>状态</th><th>来源</th><th>主题</th><th>发件人</th><th>签名结论</th><th>附件</th></tr></thead>
       <tbody>
       {% for item in messages %}
         <tr>
@@ -101,10 +104,11 @@
           <td><code>{{ item.source_name }}/{{ item.relative_path }}</code></td>
           <td><a href="/messages/{{ item.id }}">{{ item.subject or "（无主题）" }}</a></td>
           <td>{{ item.sender }}</td>
+          <td><span class="tag s-{{ 'accepted' if item.signature_verdict == 'trusted' else ('error' if item.signature_verdict == 'invalid' else ('rejected' if item.signature_verdict == 'integrity_valid_but_untrusted' else 'duplicate')) }}">{{ item.signature_verdict }}</span></td>
           <td>{{ item.attachment_count if item.attachment_count is defined else "" }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="5" class="muted">没有邮件记录。</td></tr>
+        <tr><td colspan="6" class="muted">没有邮件记录。</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -112,7 +116,7 @@
   <h2>附件</h2>
   <div class="panel">
     <table>
-      <thead><tr><th>状态</th><th>来源</th><th>安全文件名</th><th>MIME</th><th>字节</th><th>原因</th></tr></thead>
+      <thead><tr><th>状态</th><th>来源</th><th>安全文件名</th><th>MIME</th><th>字节</th><th>来源认证</th><th>原因</th></tr></thead>
       <tbody>
       {% for item in attachments %}
         <tr>
@@ -121,10 +125,11 @@
           <td><a href="/attachments/{{ item.id }}">{{ item.safe_filename }}</a></td>
           <td>{{ item.media_type }}</td>
           <td>{{ item.size }}</td>
+          <td><code>{{ item.signature_status or "none" }}</code></td>
           <td><code>{{ item.reason_code }}</code></td>
         </tr>
       {% else %}
-        <tr><td colspan="6" class="muted">没有附件记录。</td></tr>
+        <tr><td colspan="7" class="muted">没有附件记录。</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -144,6 +149,20 @@
     <dt>错误</dt><dd><code>{{ message.error_code }}</code> {{ message.error_detail }}</dd>
     {% endif %}
   </dl>
+  <h2>来源认证</h2>
+  <dl class="panel detail">
+    <dt>完整性</dt><dd><code>{{ message.signature_integrity or "not_signed" }}</code></dd>
+    <dt>本地信任</dt><dd><code>{{ message.signature_trust or "not_applicable" }}</code></dd>
+    <dt>结论</dt><dd><span class="tag s-{{ 'accepted' if message.signature_verdict == 'trusted' else ('error' if message.signature_verdict == 'invalid' else ('rejected' if message.signature_verdict == 'integrity_valid_but_untrusted' else 'duplicate')) }}">{{ message.signature_verdict }}</span></dd>
+    <dt>原因</dt><dd><code>{{ message.signature_reason_code or "—" }}</code> {{ message.signature_reason or "" }}</dd>
+    <dt>签发者</dt><dd>{{ message.signer.get('subject', '—') if message.signer else "—" }}</dd>
+    <dt>签发者证书指纹</dt><dd><code>{{ message.signer.get('fingerprint_sha256', '—') if message.signer else "—" }}</code></dd>
+    <dt>证书自签</dt><dd>{{ "是" if message.signer and message.signer.get('self_issued') else "否" }}</dd>
+    <dt>命中信任锚</dt><dd><code>{{ message.signature_anchor_fingerprint or "—" }}</code></dd>
+    <dt>被签内容 SHA-256</dt><dd><code>{{ message.signature_signed_digest or "—" }}</code></dd>
+    <dt>证据绑定哈希</dt><dd><code>{{ message.evidence_hash or "—" }}</code></dd>
+  </dl>
+  <p class="muted">完整性有效只说明签名覆盖当前字节；只有签发证书链到本机显式配置的信任锚时，结论才会是 trusted。自签名或未知锚证书记为 integrity_valid_but_untrusted。</p>
   <h2>该邮件的附件判定</h2>
   <div class="panel">
     <table>
@@ -180,11 +199,15 @@
     <dt>字节</dt><dd>{{ attachment.size }}</dd>
     <dt>SHA-256</dt><dd><code>{{ attachment.sha256 }}</code></dd>
     <dt>判定原因</dt><dd><code>{{ attachment.reason_code }}</code> {{ attachment.reason }}</dd>
+    <dt>来源认证</dt><dd><code>{{ attachment.signature_status or "none" }}</code> {{ attachment.signature_detail or "" }}</dd>
+    <dt>邮件签名结论</dt><dd><code>{{ attachment.message_signature_verdict or "not_signed" }}</code>（完整性 {{ attachment.message_signature_integrity or "not_signed" }}，信任 {{ attachment.message_signature_trust or "not_applicable" }}）</dd>
     <dt>对象路径</dt><dd><code>{{ attachment.object_path or attachment.quarantine_path or "—" }}</code></dd>
     <dt>嵌套深度</dt><dd>{{ attachment.nested_depth }}</dd>
   </dl>
-  {% if attachment.status in ("accepted", "duplicate") and attachment.object_path %}
+  {% if attachment.status in ("accepted", "duplicate") and attachment.object_path and attachment.message_signature_integrity != "invalid" and attachment.signature_status != "signature_invalid" %}
   <p><a href="/download/{{ attachment.id }}">下载归档对象</a></p>
+  {% elif attachment.message_signature_integrity == "invalid" or attachment.signature_status == "signature_invalid" %}
+  <p class="notice">该附件的邮件签名无效，复核台不提供下载；对象字节仍可按内容哈希审计。</p>
   {% endif %}
 
   {% else %}
